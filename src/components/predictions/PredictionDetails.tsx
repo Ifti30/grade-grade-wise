@@ -347,21 +347,28 @@ export function PredictionDetails({ prediction, profile }: PredictionDetailsProp
         </Card>
       )}
 
-      {(ensemble.final_cgpa_mean || ensemble.next_sem_gpa_mean) && (
-        <div className="p-6 rounded-lg bg-gradient-to-br from-primary/20 to-accent/20 border border-primary/30">
-          <p className="text-sm text-muted-foreground mb-2">Ensemble Averages</p>
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-            <div>
-              <p className="text-xs text-muted-foreground">Final CGPA (Mean)</p>
-              <p className="text-3xl font-bold text-foreground">{formatGpa(ensemble.final_cgpa_mean)}</p>
+        {(ensemble.final_cgpa_mean || ensemble.next_sem_gpa_mean) && (
+            <div className="space-y-4">
+                <p className="text-lg font-semibold">Ensemble Averages</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                     <div
+                        className="rounded-xl border bg-card text-card-foreground shadow p-6 flex flex-col items-start gap-2">
+                        <p className="text-sm font-medium text-muted-foreground">Next Sem GPA (Mean)</p>
+                        <div className="flex items-baseline gap-2">
+                            <p className="text-4xl font-bold tracking-tight">{formatGpa(ensemble.next_sem_gpa_mean)}</p>
+                        </div>
+                    </div>
+                    <div
+                        className="rounded-xl border bg-card text-card-foreground shadow p-6 flex flex-col items-start gap-2">
+                        <p className="text-sm font-medium text-muted-foreground">Final CGPA (Mean)</p>
+                        <div className="flex items-baseline gap-2">
+                            <p className="text-4xl font-bold tracking-tight">{formatGpa(ensemble.final_cgpa_mean)}</p>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Next Sem GPA (Mean)</p>
-              <p className="text-3xl font-bold text-foreground">{formatGpa(ensemble.next_sem_gpa_mean)}</p>
-            </div>
-          </div>
-        </div>
-      )}
+        )}
+
 
       <div className="pt-4 border-t border-border/50 text-xs text-muted-foreground space-y-2">
         <p>Predicted at: {prediction.createdAt ? new Date(prediction.createdAt).toLocaleString() : 'Unknown'}</p>
