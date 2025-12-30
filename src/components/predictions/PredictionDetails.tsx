@@ -12,6 +12,7 @@ type PredictionRecord = {
   outFileUrl?: string | null;
   inputPath?: string | null;
   plots?: Record<string, string>;
+  bestModel?: string;
 };
 
 interface PredictionDetailsProps {
@@ -92,6 +93,13 @@ const SummaryCard = ({
     <p className="text-xs text-muted-foreground mb-1">{title}</p>
     <p className="text-lg font-semibold text-foreground">{value || '—'}</p>
   </Card>
+);
+
+const Bullet = ({ color }: { color: string }) => (
+  <span
+    className="inline-block w-3 h-3 rounded-full mr-3"
+    style={{ backgroundColor: color }}
+  ></span>
 );
 
 export function PredictionDetails({ prediction, profile }: PredictionDetailsProps) {
@@ -181,6 +189,17 @@ export function PredictionDetails({ prediction, profile }: PredictionDetailsProp
       ? 'bg-yellow-500/10 border-yellow-500/30'
       : 'bg-green-500/10 border-green-500/30';
 
+  const riskColorClass =
+    riskLevel?.toLowerCase() === 'high'
+      ? 'text-destructive'
+      : riskLevel?.toLowerCase() === 'medium'
+      ? 'text-yellow-500'
+      : 'text-green-500';
+
+  const bestModelName = bestModel ? String(bestModel).toLowerCase() : null;
+  const bestModelInfo = bestModelName ? modelNames.find(m => m.toLowerCase() === bestModelName) : undefined;
+  const otherModels = modelNames.filter(name => name.toLowerCase() !== bestModelName);
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -257,34 +276,75 @@ export function PredictionDetails({ prediction, profile }: PredictionDetailsProp
       )}
 
       {modelNames.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {modelNames.map((model) => {
-            const highlight = bestModel && String(bestModel).toLowerCase() === model.toLowerCase();
-            return (
-              <Card key={model} className="p-4 bg-card/50 border-border/50 space-y-3">
+        <div className="space-y-6">
+          {bestModelInfo && (
+            <div className="flex justify-center">
+              <Card
+                key={bestModelInfo}
+                className="p-6 bg-card/60 border-l-4 space-y-4 w-full max-w-md shadow-lg"
+                style={{
+                  borderLeftColor: MODEL_COLORS[bestModelInfo] || '#94a3b8',
+                }}
+              >
                 <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-sm font-semibold text-foreground">{model}</p>
-                    <p className="text-xs text-muted-foreground">Risk Level</p>
+                  <div className="flex items-center">
+                    <Bullet color={MODEL_COLORS[bestModelInfo] || '#94a3b8'} />
+                    <p className="text-lg font-bold">{bestModelInfo}</p>
                   </div>
-                  {highlight && (
-                    <span className="text-xs font-semibold text-primary">Best</span>
-                  )}
+                  <span className="text-sm font-semibold text-primary px-3 py-1 rounded-full bg-primary/10">
+                    Best Model
+                  </span>
                 </div>
-                <div className="text-sm font-semibold text-foreground capitalize">{riskLevel}</div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className={`text-xl font-bold capitalize ${riskColorClass}`}>{riskLevel}</div>
+                <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <p className="text-xs text-muted-foreground">Next Semester</p>
-                    <p className="text-lg font-semibold text-foreground">{formatGpa(nextSem[model])}</p>
+                    <p className="text-sm text-muted-foreground">Next Semester</p>
+                    <p className="text-2xl font-bold text-foreground">
+                      {formatGpa(nextSem[bestModelInfo])}
+                    </p>
                   </div>
                   <div>
-                    <p className="text-xs text-muted-foreground">Final CGPA</p>
-                    <p className="text-lg font-semibold text-foreground">{formatGpa(finalCgpa[model])}</p>
+                    <p className="text-sm text-muted-foreground">Final CGPA</p>
+                    <p className="text-2xl font-bold text-foreground">
+                      {formatGpa(finalCgpa[bestModelInfo])}
+                    </p>
                   </div>
                 </div>
               </Card>
-            );
-          })}
+            </div>
+          )}
+
+          {otherModels.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 justify-center">
+              {otherModels.map((model, index) => (
+                <Card
+                  key={model}
+                  className={`p-4 bg-card/50 border-l-4 space-y-3 ${otherModels.length % 2 !== 0 && index === otherModels.length - 1 ? 'md:col-span-2 md:max-w-sm md:mx-auto' : ''}`}
+                  style={{
+                    borderLeftColor: MODEL_COLORS[model] || '#94a3b8',
+                  }}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center">
+                      <Bullet color={MODEL_COLORS[model] || '#94a3b8'} />
+                      <p className="text-sm font-semibold">{model}</p>
+                    </div>
+                  </div>
+                  <div className={`text-base font-semibold capitalize ${riskColorClass}`}>{riskLevel}</div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Next Semester</p>
+                      <p className="text-lg font-semibold text-foreground">{formatGpa(nextSem[model])}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Final CGPA</p>
+                      <p className="text-lg font-semibold text-foreground">{formatGpa(finalCgpa[model])}</p>
+                    </div>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
