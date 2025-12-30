@@ -1,0 +1,109 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Updated File Input Design</title>
+  <style>
+    body {
+      background-color: hsl(222.2, 84%, 4.9%);
+      color: hsl(210, 40%, 98%);
+      font-family: sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+    .container {
+      width: 100%;
+      max-width: 600px;
+      padding: 2rem;
+    }
+    .label {
+      font-size: 1rem;
+      font-weight: 600;
+      color: hsl(210, 40%, 98%);
+      margin-bottom: 1rem;
+      display: block;
+    }
+    .input-wrapper {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      height: 2.75rem; /* ~h-11 */
+      border-radius: 0.375rem; /* rounded-md */
+      border: 1px solid hsl(217.2, 32.6%, 17.5%); /* border-input */
+      background-color: rgba(10, 14, 23, 0.5); /* bg-background/50 */
+      font-size: 0.875rem; /* text-sm */
+      overflow: hidden; /* To contain the rounded corners */
+    }
+    .choose-file-btn {
+      display: flex;
+      align-items: center;
+      height: 100%;
+      padding: 0 1rem;
+      background: hsl(210, 40%, 98%);
+      color: hsl(222.2, 47.4%, 11.2%);
+      cursor: pointer;
+      font-weight: 500;
+      white-space: nowrap; /* Prevent button text from wrapping */
+    }
+    .separator {
+      width: 1px;
+      height: 60%;
+      background-color: hsl(217.2, 32.6%, 30%);
+      margin: 0 0.5rem;
+    }
+    .file-name-display {
+      padding: 0 0.75rem;
+      color: hsl(215, 20.2%, 65.1%);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div>
+      <label class="label">Training Dataset (JSON)</label>
+      
+      <!-- Hidden file input -->
+      <input 
+        id="file-upload"
+        type="file" 
+        accept=".json,application/json" 
+        style="display: none;" 
+        onchange="handleFileChange(event)"
+      />
+      
+      <!-- Custom file input appearance -->
+      <div class="input-wrapper">
+        <label for="file-upload" class="choose-file-btn">
+          Choose File
+        </label>
+        <div class="separator"></div>
+        <span id="file-name" class="file-name-display">No file chosen</span>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    function handleFileChange(event) {
+      const fileNameDisplay = document.getElementById('file-name');
+      if (event.target.files && event.target.files[0]) {
+        fileNameDisplay.textContent = event.target.files[0].name;
+        fileNameDisplay.style.color = 'hsl(210, 40%, 98%)'; // Change text color to show it's a file name
+      } else {
+        fileNameDisplay.textContent = 'No file chosen';
+        fileNameDisplay.style.color = 'hsl(215, 20.2%, 65.1%)'; // Reset to placeholder color
+      }
+    }
+  </script>
+
+</body>
+</html>

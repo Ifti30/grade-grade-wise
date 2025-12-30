@@ -1,3 +1,4 @@
+
 import { useState } from 'react';
 import { api } from '@/lib/api';
 import { Layout } from '@/components/Layout';
@@ -5,11 +6,12 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Upload, Loader2, Zap } from 'lucide-react';
+import { Loader2, Zap } from 'lucide-react';
 import { toast } from 'sonner';
 import PredictionDetails from '@/components/predictions/PredictionDetails';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart';
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts';
+import { CustomFileInput } from '@/components/ui/CustomFileInput';
 
 const DEFAULT_GRADE_POINTS: Record<string, number> = {
   'A+': 4.0,
@@ -155,20 +157,12 @@ export default function DashboardPredict() {
             <div className="space-y-6">
               <div className="space-y-4">
                 <Label className="text-base font-semibold">Student Data (JSON)</Label>
-                <div className="flex gap-4">
-                  <Input
-                    type="file"
+                <CustomFileInput
+                    id="file-upload-predict"
+                    file={file}
+                    onFileChange={handleFileChange}
                     accept=".json,application/json"
-                    onChange={handleFileChange}
-                    className="flex-1 bg-background/50"
-                  />
-                  {file && (
-                    <div className="flex items-center gap-2 px-4 py-2 rounded-md bg-primary/10 text-primary text-sm">
-                      <Upload className="h-4 w-4" />
-                      {file.name}
-                    </div>
-                  )}
-                </div>
+                />
                 <p className="text-xs text-muted-foreground">
                   Upload a JSON file containing student information for prediction
                 </p>

@@ -1,3 +1,4 @@
+
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
@@ -7,8 +8,9 @@ import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { GradeScaleEditor } from '@/components/GradeScaleEditor';
 import { LogStream } from '@/components/LogStream';
-import { Upload, Loader2, Sparkles, BarChart3 } from 'lucide-react';
+import { Loader2, Sparkles, BarChart3 } from 'lucide-react';
 import { toast } from 'sonner';
+import { CustomFileInput } from '@/components/ui/CustomFileInput';
 
 const DEFAULT_CONFIG: any = {
   RANDOM_SEED: 42,
@@ -429,21 +431,13 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
 
       {/* File Upload */}
       <div className="space-y-4">
-        <Label className="text-base font-semibold">Training Dataset (JSON)</Label>
-        <div className="flex gap-4">
-          <Input
-            type="file"
-            accept=".json,application/json"
-            onChange={handleFileChange}
-            className="flex-1 bg-background/50"
-          />
-          {file && (
-            <div className="flex items-center gap-2 px-4 py-2 rounded-md bg-primary/10 text-primary text-sm">
-              <Upload className="h-4 w-4" />
-              {file.name}
-            </div>
-          )}
-        </div>
+        <Label className="text-base font-semibold" htmlFor='file-upload'>Training Dataset (JSON)</Label>
+        <CustomFileInput 
+          id="file-upload"
+          file={file}
+          onFileChange={handleFileChange}
+          accept=".json,application/json"
+        />
       </div>
 
       {/* Dataset Profile */}
