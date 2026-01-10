@@ -37,11 +37,11 @@ export default function Index() {
             </div>
             
             <div className="space-y-4">
-              <h1 className="text-6xl md:text-7xl font-bold text-foreground bg-clip-text">
-                Grade Predictor
+              <h1 className="text-5xl md:text-6xl font-bold text-foreground bg-clip-text">
+              Empirical Grade Prediction
               </h1>
-              <p className="text-2xl text-muted-foreground max-w-3xl mx-auto">
-                ML-powered academic performance prediction system with real-time training and risk analysis
+              <p className="text-xl text-muted-foreground max-w-3xl mx-auto">
+              A systematic study on features influencing grade forecasting using multiple basic ML algorithms
               </p>
             </div>
 

@@ -1,4 +1,4 @@
-# Grade Predictor - Fullstack ML System
+# Empirical Garde Prediction - A systematic study on features influencing grade forecasting using multiple basic ML algorithms
 
 A modern fullstack web application that orchestrates Python ML scripts for grade prediction with real-time training logs, predictions, and comprehensive dashboard.
 
@@ -41,7 +41,7 @@ Create a database and user you control, then grant privileges:
 
 ```bash
 psql -U postgres -c "CREATE DATABASE grades;"
-psql -U postgres -c "CREATE USER grade_app WITH PASSWORD 'change-me';"
+psql -U postgres -c "CREATE USER grade_app WITH PASSWORD \'change-me\';"
 psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE grades TO grade_app;"
 ```
 
