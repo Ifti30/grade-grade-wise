@@ -80,57 +80,22 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
   const renderLogs = () => {
     const lines = logs.split('\n');
     const nodes: React.ReactNode[] = [];
-    let epochBuffer: string[] = [];
-
-    const compactEpochEntry = (entry: string) => (
-      entry
-        .replace('epoch=', 'e')
-        .replace('valLoss=', 'v')
-        .replace(/\s+/g, ' ')
-        .trim()
-    );
-
-    const flushEpochs = () => {
-      if (!epochBuffer.length) return;
-      const key = `epoch-block-${nodes.length}`;
-      const perRow = 6;
-      for (let i = 0; i < epochBuffer.length; i += perRow) {
-        const row = epochBuffer.slice(i, i + perRow);
-        nodes.push(
-          <div
-            key={`${key}-${i}`}
-            className="pl-4 text-[11px] text-sky-600/90 flex flex-wrap gap-x-4 gap-y-1"
-          >
-            {row.map((entry, idx) => (
-              <span key={`${key}-${i}-${idx}`} className="whitespace-nowrap">
-                {compactEpochEntry(entry)}
-              </span>
-            ))}
-          </div>
-        );
-      }
-      epochBuffer = [];
-    };
 
     lines.forEach((line, index) => {
       const trimmedEnd = line.trimEnd();
       const trimmedStart = trimmedEnd.trimStart();
       if (!trimmedStart) {
-        flushEpochs();
         nodes.push(<div key={`spacer-${index}`} className="h-2" />);
         return;
       }
 
       if (trimmedStart.startsWith('epoch=') || trimmedStart.startsWith('valLoss=')) {
-        epochBuffer.push(trimmedStart);
         return;
       }
 
-      flushEpochs();
       nodes.push(renderLine(trimmedStart, index));
     });
 
-    flushEpochs();
     return nodes;
   };
 

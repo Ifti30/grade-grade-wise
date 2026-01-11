@@ -992,6 +992,7 @@ def main():
         "enabledModels": [r["name"] for r in final_results],
         "artifactsDir": str(out_dir),
         "plots": saved_plots,
+        "metrics": metrics_payload,
         "resumed": resumed_training
     })
     return 0
