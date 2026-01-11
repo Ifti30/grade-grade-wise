@@ -2,9 +2,8 @@ import { spawn, spawnSync } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { makeResultCatcher } from './makeResultCatcher';
-import { TrainingResultSchema } from './schemas';
-import { makeResultCatcher } from './makeResultCatcher'
+import { makeResultCatcher } from './makeResultCatcher.js';
+import { TrainingResultSchema } from '../schemas/trainingResult.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 function resolvePythonBinary() {
@@ -80,7 +79,7 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
       console.error('Python error:', err);
     },
   });
-  
+
   pythonProcess.stdout.on('data', (data) => {
     catcher.write(data.toString('utf8'));
   });
@@ -202,7 +201,7 @@ export async function runPythonPredict(orgId, studentJsonPath, artifactsDir, out
       console.error('Python error:', err);
     },
   });
-  
+
   pythonProcess.stdout.on('data', (data) => {
     catcher.write(data.toString('utf8'));
   });
@@ -214,12 +213,12 @@ export async function runPythonPredict(orgId, studentJsonPath, artifactsDir, out
   return new Promise((resolve, reject) => {
     pythonProcess.on('close', (code) => {
       const { result, error } = catcher.getResult();
-    
+
       if (error) {
         reject(new Error(error.message));
         return;
       }
-    
+
       if (!result) {
         reject(
           new Error(
@@ -228,22 +227,15 @@ export async function runPythonPredict(orgId, studentJsonPath, artifactsDir, out
         );
         return;
       }
-    
-      const parsed = TrainingResultSchema.safeParse(result);
-      if (!parsed.success) {
-        reject(
-          new Error('Invalid result schema: ' + parsed.error.message)
-        );
+
+      const parsedResJson = TrainingResultSchema.safeParse(resultJson);
+      if (!parsedResJson.success) {
+        reject(new Error('Invalid training result: ' + parsedResJson.error.message));
         return;
       }
-      const parsed = TrainingResultSchema.safeParse(resultJson);
-      if (!parsed.success) {
-        reject(new Error('Invalid training result: ' + parsed.error.message));
-        return;
-      }
-      resolve(parsed.data);
+      resolve(parsedResJson.data);
     });
-    
+
 
     pythonProcess.on('error', (error) => {
       reject(error);
