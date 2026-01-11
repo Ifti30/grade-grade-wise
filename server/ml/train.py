@@ -179,7 +179,23 @@ def average_credit_hours(student):
         return None
     return float(np.mean(loads))
 
-
+def emit_progress(**data):
+    print(
+        "__PROGRESS__" +
+        json.dumps(data, separators=(",", ":")),
+        flush=True
+    )
+def emit_result(payload: dict):
+    """
+    Emits the final result as a single-line JSON payload.
+    REQUIRED by Node state machine.
+    """
+    print(
+        "__RESULT__" +
+        json.dumps(payload, separators=(",", ":")),
+        flush=True
+    )
+    
 # ------------------------- Main -------------------------
 def main():
     import warnings; warnings.filterwarnings("ignore")
@@ -189,7 +205,10 @@ def main():
     ap.add_argument("--train-json", required=True)
     ap.add_argument("--config-json", required=True)
     ap.add_argument("--out-dir", required=True)
+    ap.add_argument('--model-id', required=True)
+    ap.add_argument('--resume', action='store_true')
     args = ap.parse_args()
+
 
     org_id = args.org_id
     out_dir = Path(args.out_dir); plots_dir = out_dir/"plots"
@@ -285,6 +304,24 @@ def main():
             semester_gpa_sums[bucket] = semester_gpa_sums.get(bucket, 0.0) + sem_gpa
             semester_gpa_counts[bucket] = semester_gpa_counts.get(bucket, 0) + 1
 
+        # ---------- BUILD FINAL CGPA DATA ----------
+
+        Xf, yf = build_features_for_final(student, GRADE_POINTS)
+        if Xf is not None and yf is not None:
+            X_final.append(Xf)
+            y_final.append(yf)
+
+            avg_ch = average_credit_hours(student)
+            if avg_ch is not None:
+                avg_course_loads.append(avg_ch)
+
+        # ---------- BUILD NEXT SEMESTER DATA ----------
+
+        Xn, yn = build_features_for_next_label(student, GRADE_POINTS)
+        if Xn is not None and yn is not None:
+            X_next.append(Xn)
+            y_next.append(yn)
+
     semester_gpa_by_load = {
         str(k): float(semester_gpa_sums[k]/semester_gpa_counts[k])
         for k in semester_gpa_sums
@@ -298,6 +335,11 @@ def main():
     X_next  = np.array(X_next,  float) if len(X_next)  else np.empty((0, feature_count))
     y_next  = np.array(y_next,  float) if len(y_next)  else np.empty((0,))
 
+    emit_progress(
+        phase="data_ready",
+        samplesFinal=len(X_final),
+        samplesNext=len(X_next)
+    )
 
     overall_semester_gpa = float(total_gpa_sum / total_gpa_count) if total_gpa_count else None
 
@@ -331,6 +373,12 @@ def main():
     import lightgbm as lgb
     from sklearn.metrics import r2_score, mean_squared_error, accuracy_score, mean_absolute_error
 
+    emit_progress(
+        phase="init",
+        modelId=args.model_id,
+        orgId=org_id
+    )
+
     # Split for evaluation
     from sklearn.model_selection import train_test_split as _tts
 
@@ -358,10 +406,50 @@ def main():
         loss_fn = nn.MSELoss()
         best = math.inf; best_state = None; patience_ctr = 0
         history = {"train": [], "valid": []}
-        for ep in range(epochs):
+        checkpoint_path = f"checkpoints/{args.model_id}_mlp.pt"
+        start_epoch = 0
+
+        if args.resume and os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path)
+            scaler = checkpoint["scaler"]
+            model.load_state_dict(checkpoint["model"])
+            opt.load_state_dict(checkpoint["optimizer"])
+            start_epoch = checkpoint["epoch"] + 1
+
+            emit_progress(
+                phase="resume",
+                model="MLP",
+                startEpoch=start_epoch
+            )
+
+        emit_progress(
+            phase="training_start",
+            model="MLP",
+            samples=len(Xtr)
+        )
+        for ep in range(start_epoch, epochs):
+            def save_checkpoint(epoch):
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "scaler": scaler,
+                        "model": model.state_dict(),
+                        "optimizer": opt.state_dict()
+                    },
+                    out_dir/"MLP_state.pt"
+                )
+            
+            emit_progress(
+                phase="training",
+                model="MLP",
+                epoch=ep + 1,
+                totalEpochs=epochs,
+                valLoss=float(vloss)
+            )
             model.train(); opt.zero_grad()
             pred = model(xt); loss = loss_fn(pred, yt); loss.backward(); opt.step()
             model.eval()
+            save_checkpoint(ep)
             with torch.no_grad():
                 vloss = loss_fn(model(xv), yv).item()
             history["train"].append(float(loss.item()))
@@ -438,6 +526,39 @@ def main():
         size = min(limit, total)
         idx = np.linspace(0, total - 1, num=size, dtype=int)
         return [{"actual": float(y_true[i]), "predicted": float(y_pred[i])} for i in idx]
+    
+    def mlp_permutation_importance(model, scaler, X, y, n_repeats=5):
+        """
+        Manual permutation importance for PyTorch MLP
+        """
+        Xs = scaler.transform(X)
+
+        import torch
+        with torch.no_grad():
+            baseline_preds = model(torch.tensor(Xs, dtype=torch.float32)).numpy().ravel()
+        baseline_rmse = math.sqrt(mean_squared_error(y, baseline_preds))
+
+        rng = np.random.RandomState(42)
+        importances = []
+
+        for j in range(Xs.shape[1]):
+            rmses = []
+            for _ in range(n_repeats):
+                Xp = Xs.copy()
+                rng.shuffle(Xp[:, j])
+
+                with torch.no_grad():
+                    preds = model(torch.tensor(Xp, dtype=torch.float32)).numpy().ravel()
+
+                rmse = math.sqrt(mean_squared_error(y, preds))
+                rmses.append(rmse)
+
+            importances.append(float(np.mean(rmses) - baseline_rmse))
+
+        return [
+            {"feature": feat_names[i], "importance": importances[i]}
+            for i in range(len(feat_names))
+        ] 
 
     def compute_feature_importance_for_model(name, model, X, y):
         try:
@@ -474,7 +595,12 @@ def main():
         for name, model in models.items():
             importance[name] = compute_feature_importance_for_model(name, model, Xte, yte)
         if mlp_model is not None and mlp_scaler is not None:
-            importance["MLP"] = compute_feature_importance_for_model("MLP", MLPWrapper(mlp_model, mlp_scaler), Xte, yte)
+            importance["MLP"] = mlp_permutation_importance(
+                mlp_model,
+                mlp_scaler,
+                Xte,
+                yte
+            )
         return importance
 
     def build_dataset_metrics(suite):
@@ -513,6 +639,11 @@ def main():
                 min_samples_leaf=DT_MIN_SAMPLES_LEAF
             )
             dt.fit(X_tr, y_tr)
+            emit_progress(
+                phase="model_trained",
+                model="DecisionTree",
+                label=label
+            )
             models["DecisionTree"] = dt
 
         if RF_ENABLE:
@@ -524,11 +655,21 @@ def main():
                 min_samples_leaf=RF_MIN_SAMPLES_LEAF
             )
             rf.fit(X_tr, y_tr)
+            emit_progress(
+                phase="model_trained",
+                model="RandomForest",
+                label=label
+            )            
             models["RandomForest"] = rf
 
         if SVR_ENABLE:
             svr = SVR(kernel="rbf", C=SVR_C, epsilon=SVR_EPSILON, gamma="scale")
             svr.fit(X_tr, y_tr)
+            emit_progress(
+                phase="model_trained",
+                model="SVR",
+                label=label
+            )
             models["SVR"] = svr
 
         if LGBM_ENABLE:
@@ -553,6 +694,11 @@ def main():
                 callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False),
                            lgb.record_evaluation(evals_result)]
             )
+            emit_progress(
+                phase="model_trained",
+                model="LightGBM",
+                label=label
+            )
             train_curve = evals_result.get("train", {}).get("rmse", [])
             valid_curve = evals_result.get("valid", {}).get("rmse", [])
             if train_curve or valid_curve:
@@ -574,6 +720,11 @@ def main():
                 epochs=MLP_EPOCHS,
                 patience=MLP_PATIENCE,
                 hid=MLP_HIDDEN
+            )
+            emit_progress(
+                phase="model_trained",
+                model="MLP",
+                label=label
             )
             learning_curves["MLP"] = mlp_history
 
@@ -604,6 +755,10 @@ def main():
     final_results = final_suite["results"]
     rank_df = pd.DataFrame(final_results).sort_values(by=["rmse_te","rmse_tr"], ascending=[True,True]).reset_index(drop=True)
     best_name = rank_df.iloc[0]["name"]
+    emit_progress(
+        phase="completed",
+        bestModel=best_name
+    )
     
     # ----------------------------------------------------------------------
     # NEW LOGIC TO RETRIEVE AND PRINT ORDERED FEATURE IMPORTANCE
@@ -854,10 +1009,20 @@ def main():
         "artifactsDir": str(out_dir),
         "plots": saved_plots,
         "gradePoints": GRADE_POINTS,
-        "avg_course_load": meta["baseline_course_load"]
         "metrics": metrics_payload
     }
-    print("__RESULT__" + json.dumps(result))
+    emit_result({
+        "status": "ok",
+        "modelId": args.model_id,
+        "bestModel": meta["best_model"],
+        "rmse": float(best_metrics["rmse_te"]),
+        "r2": float(best_metrics["r2_te"]),
+        "riskAccuracy": float(risk_accuracy),
+        "enabledModels": [r["name"] for r in final_results],
+        "artifactsDir": str(out_dir),
+        "plots": saved_plots,
+        "resumed": bool(args.resume)
+    })
     return 0
 
 if __name__ == "__main__":
@@ -865,5 +1030,5 @@ if __name__ == "__main__":
         import time; sys.exit(main())
     except Exception as e:
         print(f"[ERROR] {e}", file=sys.stderr)
-        print("__RESULT__" + json.dumps({"status":"error","error":str(e)}))
+        print("__RESULT__" + json.dumps({"status":"error","error":str(e)}, separators=(",", ":")), flush=True)
         sys.exit(1)
