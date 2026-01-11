@@ -2,6 +2,9 @@ import { spawn, spawnSync } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { makeResultCatcher } from './makeResultCatcher';
+import { TrainingResultSchema } from './schemas';
+import { makeResultCatcher } from './makeResultCatcher'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 function resolvePythonBinary() {
@@ -30,35 +33,6 @@ const PYTHON_BIN = resolvePythonBinary();
 const TRAIN_SCRIPT = path.resolve(__dirname, '../../ml/train.py');
 const PREDICT_SCRIPT = path.resolve(__dirname, '../../ml/predict.py');
 
-// Robust line-buffered capture that tolerates chunk splits
-function makeResultCatcher(onResult) {
-  let buf = '';
-  return (chunk) => {
-    buf += chunk;
-    // handle Windows \r\n and partial frames
-    let idx;
-    while ((idx = buf.indexOf('__RESULT__')) !== -1) {
-      // try to extract JSON object after marker
-      const after = buf.slice(idx + '__RESULT__'.length);
-      // Find end of JSON by last '}' before a newline OR try greedy parse
-      // Simple strategy: split lines and try parse the first line after the marker
-      const nl = after.indexOf('\n');
-      const candidate = (nl === -1 ? after : after.slice(0, nl)).trim();
-      try {
-        const parsed = JSON.parse(candidate);
-        onResult(parsed);
-        // consume up to end of that line
-        buf = (nl === -1 ? '' : after.slice(nl + 1));
-      } catch {
-        // Not a full JSON yet -> wait for more data
-        break;
-      }
-    }
-    // Keep buffer from growing unbounded
-    if (buf.length > 1_000_000) buf = buf.slice(-100_000);
-  };
-}
-
 export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath, outDir, prisma) {
   const logPath = path.join(outDir, 'train.log');
   const logHandle = await fs.open(logPath, 'a'); // append; create if missing
@@ -75,8 +49,11 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
     await fs.copyFile(configJsonPath, path.join(outDir, 'config.json'));
   } catch { } // best effort
 
+  const modelId = runId;
   const args = [
     TRAIN_SCRIPT,
+    '--model-id', modelId,
+    '--resume',
     '--org-id', orgId,
     '--train-json', trainJsonPath,
     '--config-json', configJsonPath,
@@ -90,12 +67,22 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
   });
 
   let resultJson = null;
-  const catchResult = makeResultCatcher((r) => { resultJson = r; });
 
-  pythonProcess.stdout.on('data', async (data) => {
-    const text = data.toString();
-    catchResult(text);
-    await logHandle.write(text);
+  const catcher = makeResultCatcher({
+    onProgress: async (progress) => {
+      await prisma.trainingProgress.upsert({
+        where: { modelId },
+        update: progress,
+        create: { modelId, ...progress },
+      });
+    },
+    onError: (err) => {
+      console.error('Python error:', err);
+    },
+  });
+  
+  pythonProcess.stdout.on('data', (data) => {
+    catcher.write(data.toString('utf8'));
   });
 
   pythonProcess.stderr.on('data', async (data) => {
@@ -146,7 +133,15 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
           console.error('Prisma update (FAILED) failed:', e);
         }
 
-        const errMsg = resultJson?.error || `Training failed with code ${code}`;
+        let stderr = '';
+
+        pythonProcess.stderr.on('data', async (data) => {
+          const text = data.toString();
+          stderr += text;
+          await logHandle.write(text);
+        });
+
+        const errMsg = resultJson?.error || `Training failed with code ${code}\n${stderr.slice(-4000)}`;
         reject(new Error(errMsg));
       }
     });
@@ -192,14 +187,24 @@ export async function runPythonPredict(orgId, studentJsonPath, artifactsDir, out
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  let resultJson = null;
-  const catchResult = makeResultCatcher((r) => { resultJson = r; });
 
   let stderr = '';
 
+  const catcher = makeResultCatcher({
+    onProgress: async (progress) => {
+      await prisma.trainingProgress.upsert({
+        where: { modelId },
+        update: progress,
+        create: { modelId, ...progress },
+      });
+    },
+    onError: (err) => {
+      console.error('Python error:', err);
+    },
+  });
+  
   pythonProcess.stdout.on('data', (data) => {
-    const text = data.toString();
-    catchResult(text);
+    catcher.write(data.toString('utf8'));
   });
 
   pythonProcess.stderr.on('data', (data) => {
@@ -208,12 +213,37 @@ export async function runPythonPredict(orgId, studentJsonPath, artifactsDir, out
 
   return new Promise((resolve, reject) => {
     pythonProcess.on('close', (code) => {
-      if (resultJson && resultJson.status === 'ok') {
-        resolve(resultJson);
-      } else {
-        reject(new Error(resultJson?.error || `Prediction failed with code ${code}\n${stderr}`));
+      const { result, error } = catcher.getResult();
+    
+      if (error) {
+        reject(new Error(error.message));
+        return;
       }
+    
+      if (!result) {
+        reject(
+          new Error(
+            `Python exited without result (code ${code})\n${stderr.slice(-4000)}`
+          )
+        );
+        return;
+      }
+    
+      const parsed = TrainingResultSchema.safeParse(result);
+      if (!parsed.success) {
+        reject(
+          new Error('Invalid result schema: ' + parsed.error.message)
+        );
+        return;
+      }
+      const parsed = TrainingResultSchema.safeParse(resultJson);
+      if (!parsed.success) {
+        reject(new Error('Invalid training result: ' + parsed.error.message));
+        return;
+      }
+      resolve(parsed.data);
     });
+    
 
     pythonProcess.on('error', (error) => {
       reject(error);
