@@ -94,14 +94,18 @@ def build_features_for_final(student, GP):
             if g is not None: sem_gpas.append(g)
     avg_att = float(np.mean(att)) if att else 0.0
     gpa_trend = (sem_gpas[-1] - sem_gpas[-2]) if len(sem_gpas) >= 2 else 0.0
+    avg_ch = average_credit_hours(student)
 
     X = [
         float(student.get("ssc_gpa", 0.0)),
         float(student.get("hsc_gpa", 0.0)),
         1 if str(student.get("gender","")).lower()=="female" else 0,
         int(student.get("birth_year", 0)),
-        avg_att, gpa_trend
+        float(avg_ch) if avg_ch is not None else 0.0,
+        avg_att,
+        gpa_trend
     ]
+
     return X, float(y)
 
 def build_features_for_next(student, GP):
@@ -116,12 +120,14 @@ def build_features_for_next(student, GP):
         if g is not None: sem_gpas.append(g)
     avg_att = float(np.mean(att)) if att else 0.0
     gpa_trend = (sem_gpas[-1] - sem_gpas[-2]) if len(sem_gpas) >= 2 else 0.0
+    avg_ch = average_credit_hours(student)
 
     X = [
         float(student.get("ssc_gpa", 0.0)),
         float(student.get("hsc_gpa", 0.0)),
         1 if str(student.get("gender","")).lower()=="female" else 0,
         int(student.get("birth_year", 0)),
+        float(avg_ch) if avg_ch is not None else 0.0,
         avg_att, gpa_trend
     ]
     return X
@@ -146,17 +152,19 @@ def build_features_for_next_label(student, GP):
             if g is not None: sem_gpas.append(g)
     avg_att = float(np.mean(att)) if att else 0.0
     gpa_trend = (sem_gpas[-1] - sem_gpas[-2]) if len(sem_gpas) >= 2 else 0.0
+    avg_ch = average_credit_hours(student)
 
     X = [
         float(student.get("ssc_gpa", 0.0)),
         float(student.get("hsc_gpa", 0.0)),
         1 if str(student.get("gender","")).lower()=="female" else 0,
         int(student.get("birth_year", 0)),
+        float(avg_ch) if avg_ch is not None else 0.0,
         avg_att, gpa_trend
     ]
     return X, float(y)
 
-def average_course_load(student):
+def average_credit_hours(student):
     semesters = student.get("semesters", {})
     if not semesters:
         return None
@@ -164,12 +172,13 @@ def average_course_load(student):
     for sem in semesters.values():
         if not isinstance(sem, dict):
             continue
-        load = sum(1 for k in sem if k != "attendancePercentage")
-        if load > 0:
-            loads.append(load)
+        ch = sem.get("creditHours", None)
+        if ch is not None and ch > 0:
+            loads.append(ch)
     if not loads:
         return None
     return float(np.mean(loads))
+
 
 # ------------------------- Main -------------------------
 def main():
@@ -256,69 +265,58 @@ def main():
     X_final, y_final = [], []
     X_next, y_next = [], []
     avg_course_loads = []
-    load_gpa_sums = {i: 0.0 for i in range(1, 8)}
-    load_gpa_counts = {i: 0 for i in range(1, 8)}
+    semester_gpa_sums = {}
+    semester_gpa_counts = {}
 
     for student in data:
-        Xf, yf = build_features_for_final(student, GRADE_POINTS)
-        if Xf is not None and yf is not None:
-            X_final.append(Xf); y_final.append(yf)
-            avg_load = average_course_load(student)
-            if avg_load is not None:
-                avg_course_loads.append(avg_load)
-        Xn, yn = build_features_for_next_label(student, GRADE_POINTS)
-        if Xn is not None and yn is not None:
-            X_next.append(Xn)
-            y_next.append(yn)
-
         semesters = student.get("semesters", {})
-        if isinstance(semesters, dict):
-            for sem in semesters.values():
-                if not isinstance(sem, dict):
-                    continue
-                load = sum(1 for k in sem if k != "attendancePercentage")
-                if load <= 0:
-                    continue
-                sem_gpa = semester_gpa(sem, GRADE_POINTS)
-                if sem_gpa is None:
-                    continue
-                bucket = min(7, max(1, int(load)))
-                load_gpa_sums[bucket] += float(sem_gpa)
-                load_gpa_counts[bucket] += 1
+        if not isinstance(semesters, dict):
+            continue
+        for sem in semesters.values():
+            if not isinstance(sem, dict):
+                continue
+            ch = sem.get("creditHours", None)
+            if ch is None or ch <= 0:
+                continue
+            sem_gpa = semester_gpa(sem, GRADE_POINTS)
+            if sem_gpa is None:
+                continue
+            bucket = int(round(ch))  # Use rounded credit hours as bucket
+            semester_gpa_sums[bucket] = semester_gpa_sums.get(bucket, 0.0) + sem_gpa
+            semester_gpa_counts[bucket] = semester_gpa_counts.get(bucket, 0) + 1
 
-    feat_names = ["ssc_gpa","hsc_gpa","gender_bin","birth_year","avg_attendance","gpa_trend"]
+    semester_gpa_by_load = {
+        str(k): float(semester_gpa_sums[k]/semester_gpa_counts[k])
+        for k in semester_gpa_sums
+    }
+
+
+    feat_names = ["ssc_gpa","hsc_gpa","gender_bin","birth_year","avg_credit_hours","avg_attendance","gpa_trend"]
     feature_count = len(feat_names)
     X_final = np.array(X_final, float) if len(X_final) else np.empty((0, feature_count))
     y_final = np.array(y_final, float) if len(y_final) else np.empty((0,))
     X_next  = np.array(X_next,  float) if len(X_next)  else np.empty((0, feature_count))
     y_next  = np.array(y_next,  float) if len(y_next)  else np.empty((0,))
 
-    semester_gpa_by_load = {}
-    total_gpa_sum = 0.0
-    total_gpa_count = 0
-    for load, total in load_gpa_sums.items():
-        count = load_gpa_counts[load]
-        if count > 0:
-            semester_gpa_by_load[str(load)] = float(total / count)
-            total_gpa_sum += total
-            total_gpa_count += count
 
     overall_semester_gpa = float(total_gpa_sum / total_gpa_count) if total_gpa_count else None
 
-    final_cgpa_sums = {i: 0.0 for i in range(1, 8)}
-    final_cgpa_counts = {i: 0 for i in range(1, 8)}
-    for avg_load, final_cgpa in zip(avg_course_loads, y_final):
-        if avg_load is None:
+    final_cgpa_sums = {}
+    final_cgpa_counts = {}
+
+    for student, final_gpa in zip(data, y_final):
+        avg_ch = average_credit_hours(student)
+        if avg_ch is None:
             continue
-        bucket = min(7, max(1, int(round(avg_load))))
-        final_cgpa_sums[bucket] += float(final_cgpa)
-        final_cgpa_counts[bucket] += 1
+        bucket = int(round(avg_ch))  # Round average credit hours for bucket
+        final_cgpa_sums[bucket] = final_cgpa_sums.get(bucket, 0.0) + final_gpa
+        final_cgpa_counts[bucket] = final_cgpa_counts.get(bucket, 0) + 1
 
     final_cgpa_by_load = {
-        str(load): float(final_cgpa_sums[load] / final_cgpa_counts[load])
-        for load in range(1, 8)
-        if final_cgpa_counts[load] > 0
+        str(k): float(final_cgpa_sums[k]/final_cgpa_counts[k])
+        for k in final_cgpa_sums
     }
+
     overall_final_cgpa = None
     if len(y_final):
         overall_final_cgpa = float(np.mean(y_final))
@@ -599,7 +597,6 @@ def main():
 
     final_suite = train_suite(X_final, y_final, "final CGPA")
     next_suite = train_suite(X_next, y_next, "next semester") if len(y_next) > 1 else None
-
     if not final_suite["results"]:
         raise ValueError("No models are enabled for training.")
 
@@ -607,6 +604,42 @@ def main():
     final_results = final_suite["results"]
     rank_df = pd.DataFrame(final_results).sort_values(by=["rmse_te","rmse_tr"], ascending=[True,True]).reset_index(drop=True)
     best_name = rank_df.iloc[0]["name"]
+    
+    # ----------------------------------------------------------------------
+    # NEW LOGIC TO RETRIEVE AND PRINT ORDERED FEATURE IMPORTANCE
+    # ----------------------------------------------------------------------
+    
+    # Get the feature importance list for the best model
+    best_feature_importance = final_suite["feature_importance"].get(best_name, [])
+
+    # Create a map for quick lookup: {feature_name: importance_value}
+    importance_map = {item["feature"]: item["importance"] for item in best_feature_importance}
+
+    # Ensure all features from feat_names are present in the list, even if their importance is 0.
+    # This guarantees 'avg_credit_hours' (and all others) are logged.
+    complete_importance_list = []
+    for feature_name in feat_names:
+        value = importance_map.get(feature_name, 0.0)
+        complete_importance_list.append({"feature": feature_name, "importance": value})
+
+    # Sort the complete list by importance (descending) for logging
+    complete_importance_list.sort(key=lambda item: abs(item["importance"]), reverse=True)
+
+    # Prepare the list of features in order of importance (just the names)
+    ordered_features = [item["feature"] for item in complete_importance_list]
+
+    # Log the feature importance to the console
+    print("\n--- Feature Importance (Best Model: " + best_name + ") ---")
+    if ordered_features:
+        print("Rank | Feature            | Importance")
+        print("-----|--------------------|--------------")
+        for i, item in enumerate(complete_importance_list):
+            feature = item["feature"]
+            importance_value = item["importance"]
+            print(f"{i+1:4} | {feature:<18} | {importance_value:.4f}")
+    else:
+        print("Feature importance could not be computed for the best model.")
+    print("-----------------------------------------------------------\n")
 
     # --------- SAVE ARTIFACTS FIRST (so plotting errors won't break saving) ---------
     import joblib, torch
@@ -798,7 +831,8 @@ def main():
         except Exception as e:
             print(f"[WARN] plotting failed: {e}")
 
-    # --------- Final result ---------
+    # ------------------------- Final result -------------------------
+
     best_metrics = rank_df.iloc[0]
     metrics_summary = {
         "rmse": float(best_metrics["rmse_te"]),
@@ -820,6 +854,7 @@ def main():
         "artifactsDir": str(out_dir),
         "plots": saved_plots,
         "gradePoints": GRADE_POINTS,
+        "avg_course_load": meta["baseline_course_load"]
         "metrics": metrics_payload
     }
     print("__RESULT__" + json.dumps(result))

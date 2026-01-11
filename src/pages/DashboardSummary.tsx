@@ -182,6 +182,7 @@ export default function DashboardSummary() {
       toast.error('Failed to load summary');
     } finally {
       setLoading(false);
+      console.log(summary);
     }
   };
 

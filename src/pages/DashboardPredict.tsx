@@ -144,6 +144,14 @@ export default function DashboardPredict() {
     }
   };
 
+  const handleReset = () => {
+    setFile(null);
+    setResult(null);
+    setProfile(null);
+    setProfileError(null);
+    setCreditHours('');
+  };
+
   return (
     <Layout>
       <div className="space-y-6">
@@ -277,7 +285,13 @@ export default function DashboardPredict() {
         {/* Results */}
         {result && (
           <Card className="p-8 bg-card/50 backdrop-blur-sm border-border/50 animate-fade-in">
-            <h3 className="text-2xl font-bold text-foreground mb-6">Prediction Results</h3>
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-bold text-foreground">Prediction Results</h3>
+              <Button onClick={handleReset} variant="outline" className="gap-2">
+                <Zap className="h-4 w-4" />
+                Make Another Prediction
+              </Button>
+            </div>
             <PredictionDetails prediction={result} profile={profile || undefined} />
           </Card>
         )}
