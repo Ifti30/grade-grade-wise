@@ -102,6 +102,13 @@ router.post('/train', authenticateToken, upload.single('trainFile'), async (req,
       return res.status(400).json({ error: 'Training file is required' });
     }
 
+    console.log('[train] request', {
+      orgId: req.orgId,
+      filename: req.file?.filename,
+      path: req.file?.path,
+      size: req.file?.size
+    });
+
     // Parse and validate config
     let config;
     try {

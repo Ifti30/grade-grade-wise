@@ -139,12 +139,12 @@ export default function TrainingComplete() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-slide-up">
             <Card className="p-6 bg-card/50">
               <div className="flex items-center gap-3 mb-2"><BarChart3 className="h-5 w-5 text-accent" /><h3 className="font-semibold text-foreground">Accuracy</h3></div>
-              <p className="text-3xl font-bold text-foreground">{summaryMetrics.accuracy != null ? `${(summaryMetrics.accuracy*100).toFixed(1)}%` : '—'}</p>
+              <p className="text-3xl font-bold text-foreground">{summaryMetrics.accuracy != null ? `${(summaryMetrics.accuracy * 100).toFixed(1)}%` : '—'}</p>
             </Card>
-            <Card className="p-6 bg-card/50"><div className="flex items-center gap-3 mb-2"><Target className="h-5 w-5 text-accent"/><h3 className="font-semibold text-foreground">RMSE</h3></div>
+            <Card className="p-6 bg-card/50"><div className="flex items-center gap-3 mb-2"><Target className="h-5 w-5 text-accent" /><h3 className="font-semibold text-foreground">RMSE</h3></div>
               <p className="text-3xl font-bold text-foreground">{summaryMetrics.rmse != null ? summaryMetrics.rmse.toFixed(3) : '—'}</p>
             </Card>
-            <Card className="p-6 bg-card/50"><div className="flex items-center gap-3 mb-2"><TrendingUp className="h-5 w-5 text-accent"/><h3 className="font-semibold text-foreground">R² Score</h3></div>
+            <Card className="p-6 bg-card/50"><div className="flex items-center gap-3 mb-2"><TrendingUp className="h-5 w-5 text-accent" /><h3 className="font-semibold text-foreground">R² Score</h3></div>
               <p className="text-3xl font-bold text-foreground">{summaryMetrics.r2 != null ? summaryMetrics.r2.toFixed(3) : '—'}</p>
             </Card>
           </div>
@@ -165,38 +165,38 @@ export default function TrainingComplete() {
 
                 const cards: JSX.Element[] = [];
 
-                if(finalCurve.length) cards.push(
+                if (finalCurve.length) cards.push(
                   <ChartCard key="curve" title="Learning Curve">
-                    <ChartContainer config={{ train: {label:'Train', color:'#6366f1'}, valid:{label:'Valid', color:'#f59e0b'} }} className="h-52 w-full">
-                      <LineChart data={finalCurve}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="epoch"/><YAxis tickFormatter={formatDecimal}/><ChartTooltip content={<ChartTooltipContent formatter={formatDecimal}/>} /><Line type="monotone" dataKey="train" stroke="#6366f1" dot={false}/><Line type="monotone" dataKey="valid" stroke="#f59e0b" dot={false}/></LineChart>
+                    <ChartContainer config={{ train: { label: 'Train', color: '#6366f1' }, valid: { label: 'Valid', color: '#f59e0b' } }} className="h-52 w-full">
+                      <LineChart data={finalCurve}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="epoch" /><YAxis tickFormatter={formatDecimal} /><ChartTooltip content={<ChartTooltipContent formatter={formatDecimal} />} /><Line type="monotone" dataKey="train" stroke="#6366f1" dot={false} /><Line type="monotone" dataKey="valid" stroke="#f59e0b" dot={false} /></LineChart>
                     </ChartContainer>
                   </ChartCard>
                 );
 
-                if(finalImportance.length) cards.push(
+                if (finalImportance.length) cards.push(
                   <ChartCard key="importance" title="Feature Importance">
-                    <ChartContainer config={{ importance:{label:'Importance', color:modelColor} }} className="h-52 w-full">
+                    <ChartContainer config={{ importance: { label: 'Importance', color: modelColor } }} className="h-52 w-full">
                       <BarChart data={finalImportance} layout="vertical">
-                        <CartesianGrid strokeDasharray="3 3"/>
-                        <XAxis type="number" dataKey="importance" tickFormatter={formatDecimal}/>
-                        <YAxis type="category" dataKey="feature" width={90}/>
-                        <ChartTooltip content={<ChartTooltipContent formatter={formatDecimal}/>}/>
-                        <Bar dataKey="importance" fill={modelColor}/>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis type="number" dataKey="importance" tickFormatter={formatDecimal} />
+                        <YAxis type="category" dataKey="feature" width={90} />
+                        <ChartTooltip content={<ChartTooltipContent formatter={formatDecimal} />} />
+                        <Bar dataKey="importance" fill={modelColor} />
                       </BarChart>
                     </ChartContainer>
                   </ChartCard>
                 );
 
-                if(finalPredictions.length) cards.push(
+                if (finalPredictions.length) cards.push(
                   <ChartCard key="scatter" title="Predicted vs Actual">
-                    <ChartContainer config={{ predicted:{label:'Predicted', color:modelColor}}} className="h-52 w-full">
+                    <ChartContainer config={{ predicted: { label: 'Predicted', color: modelColor } }} className="h-52 w-full">
                       <ScatterChart>
-                        <CartesianGrid strokeDasharray="3 3"/>
-                        <XAxis type="number" dataKey="actual" domain={[finalDomain.min, finalDomain.max]} tickFormatter={formatGpa}/>
-                        <YAxis type="number" dataKey="predicted" domain={[finalDomain.min, finalDomain.max]} tickFormatter={formatGpa}/>
-                        <ChartTooltip content={<ChartTooltipContent formatter={formatGpa}/>} />
-                        <ReferenceLine segment={[{x:finalDomain.min,y:finalDomain.min},{x:finalDomain.max,y:finalDomain.max}]} stroke="#94a3b8" strokeDasharray="4 4"/>
-                        <Scatter data={finalPredictions} fill={modelColor}/>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis type="number" dataKey="actual" domain={[finalDomain.min, finalDomain.max]} tickFormatter={formatGpa} />
+                        <YAxis type="number" dataKey="predicted" domain={[finalDomain.min, finalDomain.max]} tickFormatter={formatGpa} />
+                        <ChartTooltip content={<ChartTooltipContent formatter={formatGpa} />} />
+                        <ReferenceLine segment={[{ x: finalDomain.min, y: finalDomain.min }, { x: finalDomain.max, y: finalDomain.max }]} stroke="#94a3b8" strokeDasharray="4 4" />
+                        <Scatter data={finalPredictions} fill={modelColor} />
                       </ScatterChart>
                     </ChartContainer>
                   </ChartCard>
@@ -220,9 +220,9 @@ export default function TrainingComplete() {
           <Card className="p-6 bg-card/50 space-y-4">
             <h3 className="text-xl font-semibold text-foreground">Model Comparisons</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {finalMaeData.length>0 && <ChartCard title="MAE (lower better)"><MetricBarChart data={finalMaeData} dataKey="mae" label="MAE"/></ChartCard>}
-              {finalRmseData.length>0 && <ChartCard title="RMSE (lower better)"><MetricBarChart data={finalRmseData} dataKey="rmse" label="RMSE"/></ChartCard>}
-              {finalR2Data.length>0 && <ChartCard title="R² (higher better)"><MetricBarChart data={finalR2Data} dataKey="r2" label="R²"/></ChartCard>}
+              {finalMaeData.length > 0 && <ChartCard title="MAE (lower better)"><MetricBarChart data={finalMaeData} dataKey="mae" label="MAE" /></ChartCard>}
+              {finalRmseData.length > 0 && <ChartCard title="RMSE (lower better)"><MetricBarChart data={finalRmseData} dataKey="rmse" label="RMSE" /></ChartCard>}
+              {finalR2Data.length > 0 && <ChartCard title="R² (higher better)"><MetricBarChart data={finalR2Data} dataKey="r2" label="R²" /></ChartCard>}
             </div>
           </Card>
         )}

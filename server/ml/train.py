@@ -286,6 +286,8 @@ def main():
     avg_course_loads = []
     semester_gpa_sums = {}
     semester_gpa_counts = {}
+    total_gpa_sum = 0.0
+    total_gpa_count = 0
 
     for student in data:
         semesters = student.get("semesters", {})
@@ -303,6 +305,8 @@ def main():
             bucket = int(round(ch))  # Use rounded credit hours as bucket
             semester_gpa_sums[bucket] = semester_gpa_sums.get(bucket, 0.0) + sem_gpa
             semester_gpa_counts[bucket] = semester_gpa_counts.get(bucket, 0) + 1
+            total_gpa_sum += sem_gpa
+            total_gpa_count += 1
 
         # ---------- BUILD FINAL CGPA DATA ----------
 
@@ -439,6 +443,12 @@ def main():
                     out_dir/"MLP_state.pt"
                 )
             
+            model.train(); opt.zero_grad()
+            pred = model(xt); loss = loss_fn(pred, yt); loss.backward(); opt.step()
+            model.eval()
+            save_checkpoint(ep)
+            with torch.no_grad():
+                vloss = loss_fn(model(xv), yv).item()
             emit_progress(
                 phase="training",
                 model="MLP",
@@ -446,12 +456,6 @@ def main():
                 totalEpochs=epochs,
                 valLoss=float(vloss)
             )
-            model.train(); opt.zero_grad()
-            pred = model(xt); loss = loss_fn(pred, yt); loss.backward(); opt.step()
-            model.eval()
-            save_checkpoint(ep)
-            with torch.no_grad():
-                vloss = loss_fn(model(xv), yv).item()
             history["train"].append(float(loss.item()))
             history["valid"].append(float(vloss))
             if vloss < best - 1e-6:
@@ -760,42 +764,6 @@ def main():
         bestModel=best_name
     )
     
-    # ----------------------------------------------------------------------
-    # NEW LOGIC TO RETRIEVE AND PRINT ORDERED FEATURE IMPORTANCE
-    # ----------------------------------------------------------------------
-    
-    # Get the feature importance list for the best model
-    best_feature_importance = final_suite["feature_importance"].get(best_name, [])
-
-    # Create a map for quick lookup: {feature_name: importance_value}
-    importance_map = {item["feature"]: item["importance"] for item in best_feature_importance}
-
-    # Ensure all features from feat_names are present in the list, even if their importance is 0.
-    # This guarantees 'avg_credit_hours' (and all others) are logged.
-    complete_importance_list = []
-    for feature_name in feat_names:
-        value = importance_map.get(feature_name, 0.0)
-        complete_importance_list.append({"feature": feature_name, "importance": value})
-
-    # Sort the complete list by importance (descending) for logging
-    complete_importance_list.sort(key=lambda item: abs(item["importance"]), reverse=True)
-
-    # Prepare the list of features in order of importance (just the names)
-    ordered_features = [item["feature"] for item in complete_importance_list]
-
-    # Log the feature importance to the console
-    print("\n--- Feature Importance (Best Model: " + best_name + ") ---")
-    if ordered_features:
-        print("Rank | Feature            | Importance")
-        print("-----|--------------------|--------------")
-        for i, item in enumerate(complete_importance_list):
-            feature = item["feature"]
-            importance_value = item["importance"]
-            print(f"{i+1:4} | {feature:<18} | {importance_value:.4f}")
-    else:
-        print("Feature importance could not be computed for the best model.")
-    print("-----------------------------------------------------------\n")
-
     # --------- SAVE ARTIFACTS FIRST (so plotting errors won't break saving) ---------
     import joblib, torch
     final_models = final_suite["models"]

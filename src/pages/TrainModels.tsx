@@ -168,6 +168,7 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
   const [file, setFile] = useState<File | null>(null);
   const [training, setTraining] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
+  const [trainingStatus, setTrainingStatus] = useState<string | null>(null);
   const [datasetProfile, setDatasetProfile] = useState<DatasetProfile | null>(null);
   const [datasetError, setDatasetError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -316,18 +317,20 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
   };
 
   const handleTrainingComplete = (status: string) => {
+    setTrainingStatus(status);
     if (status === 'SUCCEEDED') {
       toast.success('Training completed successfully!');
-      if (embedded) {
-        setTimeout(() => navigate('/dashboard/summary'), 1500);
-      } else {
-        setTimeout(() => navigate('/training-complete'), 1500);
-      }
     } else {
       toast.error('Training failed');
       setTraining(false);
-      setRunId(null);
     }
+  };
+
+  const handleCloseLogs = () => {
+    setRunId(null);
+    setTraining(false);
+    setTrainingStatus(null);
+    navigate('/dashboard/summary');
   };
 
   if (runId) {
@@ -342,13 +345,21 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
         <LogStream
           url={api.getTrainLogsUrl(runId)}
           token={token}
+          runId={runId}
           onComplete={handleTrainingComplete}
         />
+        {trainingStatus && (
+          <div className="flex justify-center">
+            <Button variant="outline" onClick={handleCloseLogs}>
+              Close Logs
+            </Button>
+          </div>
+        )}
       </div>
     );
 
     if (embedded) return content;
-    
+
     return (
       <div className="min-h-screen bg-background p-6">
         <div className="container mx-auto max-w-4xl">
@@ -432,7 +443,7 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
       {/* File Upload */}
       <div className="space-y-4">
         <Label className="text-base font-semibold" htmlFor='file-upload'>Training Dataset (JSON)</Label>
-        <CustomFileInput 
+        <CustomFileInput
           id="file-upload"
           file={file}
           onFileChange={handleFileChange}

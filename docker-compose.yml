@@ -12,7 +12,8 @@ services:
     restart: unless-stopped
 
   adminer:
-    image: adminer
+    image: adminer:latest
+    platform: linux/amd64
     ports:
       - "8080:8080"
     restart: unless-stopped

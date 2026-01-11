@@ -41,8 +41,11 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📊 Static files served from /static`);
   console.log(`🐍 Python binary: ${process.env.PYTHON_BIN || 'python3'}`);
 });
+
+server.keepAliveTimeout = 300000;
+server.headersTimeout = 305000;
