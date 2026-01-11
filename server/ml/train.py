@@ -410,15 +410,17 @@ def main():
         loss_fn = nn.MSELoss()
         best = math.inf; best_state = None; patience_ctr = 0
         history = {"train": [], "valid": []}
-        checkpoint_path = f"checkpoints/{args.model_id}_mlp.pt"
+        checkpoint_path = out_dir/"MLP_state.pt"
         start_epoch = 0
+        resumed = False
 
-        if args.resume and os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path)
+        if args.resume and checkpoint_path.exists():
+            checkpoint = torch.load(checkpoint_path, weights_only=False)
             scaler = checkpoint["scaler"]
             model.load_state_dict(checkpoint["model"])
             opt.load_state_dict(checkpoint["optimizer"])
             start_epoch = checkpoint["epoch"] + 1
+            resumed = True
 
             emit_progress(
                 phase="resume",
@@ -440,7 +442,7 @@ def main():
                         "model": model.state_dict(),
                         "optimizer": opt.state_dict()
                     },
-                    out_dir/"MLP_state.pt"
+                    checkpoint_path
                 )
             
             model.train(); opt.zero_grad()
@@ -467,7 +469,7 @@ def main():
                 break
         if best_state is not None:
             model.load_state_dict(best_state)
-        return model, scaler, history
+        return model, scaler, history, resumed
 
     # Evaluate
     def eval_model(m, Xtr, ytr, Xte, yte, name):
@@ -716,7 +718,7 @@ def main():
         mlp_scaler = None
         if MLP_ENABLE:
             Xtr_mlp, Xval_mlp, ytr_mlp, yval_mlp = _tts(X_tr, y_tr, test_size=0.2, random_state=RANDOM_SEED)
-            mlp_model, mlp_scaler, mlp_history = train_mlp(
+            mlp_model, mlp_scaler, mlp_history, mlp_resumed = train_mlp(
                 Xtr_mlp,
                 ytr_mlp,
                 Xval_mlp,
@@ -979,6 +981,7 @@ def main():
         "gradePoints": GRADE_POINTS,
         "metrics": metrics_payload
     }
+    resumed_training = bool(args.resume) and bool(MLP_ENABLE) and bool(locals().get("mlp_resumed", False))
     emit_result({
         "status": "ok",
         "modelId": args.model_id,
@@ -989,7 +992,7 @@ def main():
         "enabledModels": [r["name"] for r in final_results],
         "artifactsDir": str(out_dir),
         "plots": saved_plots,
-        "resumed": bool(args.resume)
+        "resumed": resumed_training
     })
     return 0
 
