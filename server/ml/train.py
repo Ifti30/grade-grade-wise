@@ -10,6 +10,7 @@ Fixed training script:
 """
 
 import argparse, os, sys, json, datetime, math
+from typing import Optional
 from pathlib import Path
 
 import numpy as np
@@ -59,7 +60,7 @@ def validate_grade_points(grade_points: dict):
         vals.append(float(v))
     return float(max(vals))
 
-def semester_gpa(sem, GP):
+def compute_semester_gpa(sem, GP):
     if not isinstance(sem, dict):
         return None
     pts = []
@@ -70,38 +71,62 @@ def semester_gpa(sem, GP):
             pts.append(GP[g])
     return float(np.mean(pts)) if pts else None
 
-def cumulative_cgpa(semesters, GP):
-    tot = 0.0; cnt = 0
-    for sem in semesters.values():
+def semester_gpa(sem, GP):
+    return compute_semester_gpa(sem, GP)
+
+def compute_cgpa(semesters, sem_nums, upto, GP):
+    if not isinstance(semesters, dict):
+        return None
+    use = sem_nums[:upto]
+    total_points = 0.0
+    total_hours = 0.0
+    for sem_no in use:
+        sem = semesters.get(str(sem_no))
         if not isinstance(sem, dict):
             continue
-        for k, g in sem.items():
-            if k == "attendancePercentage":
-                continue
-            if g in GP:
-                tot += GP[g]; cnt += 1
-    return (tot/cnt) if cnt > 0 else None
+        sem_gpa = compute_semester_gpa(sem, GP)
+        if sem_gpa is None:
+            continue
+        ch = sem.get("creditHours")
+        if not isinstance(ch, (int, float)) or ch <= 0:
+            continue
+        total_points += sem_gpa * float(ch)
+        total_hours += float(ch)
+    if total_hours <= 0:
+        return None
+    return float(total_points / total_hours)
+
+def cumulative_cgpa(semesters, GP):
+    if not isinstance(semesters, dict):
+        return None
+    sem_nums = sorted(int(k) for k in semesters.keys() if str(k).isdigit())
+    if not sem_nums:
+        return None
+    return compute_cgpa(semesters, sem_nums, len(sem_nums), GP)
 
 def build_features_for_final(student, GP):
     semesters = student.get("semesters", {})
     if not semesters: return None, None
     sem_nums = sorted(map(int, semesters.keys()))
     if len(sem_nums) < 2: return None, None
-    y = cumulative_cgpa(semesters, GP)
+    y = compute_cgpa(semesters, sem_nums, len(sem_nums), GP)
     if y is None: return None, None
 
     upto = sem_nums[-2]
-    att, sem_gpas = [], []
+    att = []
     for s in sem_nums:
         if s <= upto:
             sem = semesters[str(s)]
             if not isinstance(sem, dict):
                 continue
             if "attendancePercentage" in sem: att.append(sem["attendancePercentage"])
-            g = semester_gpa(sem, GP)
-            if g is not None: sem_gpas.append(g)
     avg_att = float(np.mean(att)) if att else 0.0
-    gpa_trend = (sem_gpas[-1] - sem_gpas[-2]) if len(sem_gpas) >= 2 else 0.0
+    s_count = len(sem_nums) - 1
+    cgpa_1 = compute_cgpa(semesters, sem_nums, 1, GP)
+    cgpa_s = compute_cgpa(semesters, sem_nums, s_count, GP)
+    if cgpa_1 is None or cgpa_s is None:
+        return None, None
+    gpa_trend = 0.0 if s_count == 1 else float((cgpa_s - cgpa_1) / (s_count - 1))
     avg_ch = average_credit_hours(student)
 
     X = [
@@ -120,16 +145,19 @@ def build_features_for_next(student, GP):
     semesters = student.get("semesters", {})
     if not semesters: return None
     sem_nums = sorted(map(int, semesters.keys()))
-    att, sem_gpas = [], []
+    att = []
     for s in sem_nums:
         sem = semesters[str(s)]
         if not isinstance(sem, dict):
             continue
         if "attendancePercentage" in sem: att.append(sem["attendancePercentage"])
-        g = semester_gpa(sem, GP)
-        if g is not None: sem_gpas.append(g)
     avg_att = float(np.mean(att)) if att else 0.0
-    gpa_trend = (sem_gpas[-1] - sem_gpas[-2]) if len(sem_gpas) >= 2 else 0.0
+    s_count = len(sem_nums)
+    cgpa_1 = compute_cgpa(semesters, sem_nums, 1, GP)
+    cgpa_s = compute_cgpa(semesters, sem_nums, s_count, GP)
+    if cgpa_1 is None or cgpa_s is None:
+        return None
+    gpa_trend = 0.0 if s_count == 1 else float((cgpa_s - cgpa_1) / (s_count - 1))
     avg_ch = average_credit_hours(student)
 
     X = [
@@ -147,23 +175,24 @@ def build_features_for_next_label(student, GP):
     if not semesters: return None, None
     sem_nums = sorted(map(int, semesters.keys()))
     if len(sem_nums) < 2: return None, None
-    last = sem_nums[-1]
-    last_sem = semesters.get(str(last), {})
-    y = semester_gpa(last_sem, GP)
+    y = compute_cgpa(semesters, sem_nums, len(sem_nums), GP)
     if y is None: return None, None
 
     upto = sem_nums[-2]
-    att, sem_gpas = [], []
+    att = []
     for s in sem_nums:
         if s <= upto:
             sem = semesters[str(s)]
             if not isinstance(sem, dict):
                 continue
             if "attendancePercentage" in sem: att.append(sem["attendancePercentage"])
-            g = semester_gpa(sem, GP)
-            if g is not None: sem_gpas.append(g)
     avg_att = float(np.mean(att)) if att else 0.0
-    gpa_trend = (sem_gpas[-1] - sem_gpas[-2]) if len(sem_gpas) >= 2 else 0.0
+    s_count = len(sem_nums) - 1
+    cgpa_1 = compute_cgpa(semesters, sem_nums, 1, GP)
+    cgpa_s = compute_cgpa(semesters, sem_nums, s_count, GP)
+    if cgpa_1 is None or cgpa_s is None:
+        return None, None
+    gpa_trend = 0.0 if s_count == 1 else float((cgpa_s - cgpa_1) / (s_count - 1))
     avg_ch = average_credit_hours(student)
 
     X = [
@@ -190,6 +219,127 @@ def average_credit_hours(student):
     if not loads:
         return None
     return float(np.mean(loads))
+
+def iter_student_windows(student):
+    semesters = student.get("semesters", {})
+    if not isinstance(semesters, dict):
+        return []
+    sem_nums = sorted(int(k) for k in semesters.keys() if str(k).isdigit())
+    if len(sem_nums) < 2:
+        return []
+    return list(range(1, len(sem_nums)))
+
+def build_features_upto_s(student, GP, s, gpa_trend):
+    semesters = student.get("semesters", {})
+    if not isinstance(semesters, dict):
+        return None
+    sem_nums = sorted(int(k) for k in semesters.keys() if str(k).isdigit())
+    if s < 1 or s > len(sem_nums):
+        return None
+    use = sem_nums[:s]
+    att, credit_hours = [], []
+    for sem_no in use:
+        sem = semesters.get(str(sem_no))
+        if not isinstance(sem, dict):
+            continue
+        if "attendancePercentage" in sem:
+            att.append(sem["attendancePercentage"])
+        ch = sem.get("creditHours")
+        if isinstance(ch, (int, float)) and ch > 0:
+            credit_hours.append(ch)
+    avg_att = float(np.mean(att)) if att else 0.0
+    avg_ch = float(np.mean(credit_hours)) if credit_hours else 0.0
+    return [
+        float(student.get("ssc_gpa", 0.0)),
+        float(student.get("hsc_gpa", 0.0)),
+        1 if str(student.get("gender", "")).lower() == "female" else 0,
+        int(student.get("birth_year", 0)),
+        avg_ch,
+        avg_att,
+        float(gpa_trend)
+    ]
+
+def predict_single_student(
+    student: dict,
+    models_next: dict,
+    best_model_name: str,
+    grade_points: dict,
+    thresholds: dict,
+    feat_names: list,
+    explicit_s: Optional[int] = None
+):
+    """
+    Reference inference function.
+    Uses identical feature extraction, CGPA computation,
+    and risk thresholds as training.
+    Not used in training or evaluation.
+    Intended for validation, debugging, and demonstration.
+    """
+    semesters = student.get("semesters", {})
+    if not isinstance(semesters, dict):
+        return None
+    sem_nums = sorted(int(k) for k in semesters.keys() if str(k).isdigit())
+    if len(sem_nums) < 2:
+        return None
+    n = len(sem_nums)
+    if explicit_s is None:
+        s = n - 1
+    else:
+        s = max(1, min(int(explicit_s), n - 1))
+
+    cgpa_1 = compute_cgpa(semesters, sem_nums, 1, grade_points)
+    cgpa_s = compute_cgpa(semesters, sem_nums, s, grade_points)
+    if cgpa_1 is None or cgpa_s is None:
+        return None
+    gpa_trend = 0.0 if s == 1 else float((cgpa_s - cgpa_1) / (s - 1))
+
+    use = sem_nums[:s]
+    att, credit_hours = [], []
+    for sem_no in use:
+        sem = semesters.get(str(sem_no))
+        if not isinstance(sem, dict):
+            continue
+        if "attendancePercentage" in sem:
+            att.append(sem["attendancePercentage"])
+        ch = sem.get("creditHours")
+        if isinstance(ch, (int, float)) and ch > 0:
+            credit_hours.append(ch)
+    avg_att = float(np.mean(att)) if att else 0.0
+    avg_ch = float(np.mean(credit_hours)) if credit_hours else 0.0
+
+    feature_map = {
+        "ssc_gpa": float(student.get("ssc_gpa", 0.0)),
+        "hsc_gpa": float(student.get("hsc_gpa", 0.0)),
+        "gender_bin": 1 if str(student.get("gender", "")).lower() == "female" else 0,
+        "birth_year": int(student.get("birth_year", 0)),
+        "avg_credit_hours": avg_ch,
+        "avg_attendance": avg_att,
+        "gpa_trend": float(gpa_trend)
+    }
+    X = [feature_map.get(name, 0.0) for name in feat_names]
+    X_arr = np.array([X], float)
+    assert X_arr.shape[1] == len(feat_names)
+
+    model = models_next.get(best_model_name)
+    if model is None:
+        return None
+    pred_value = float(model.predict(X_arr)[0])
+
+    high_max = thresholds.get("high_max") if isinstance(thresholds, dict) else None
+    med_max = thresholds.get("med_max") if isinstance(thresholds, dict) else None
+    if isinstance(high_max, (int, float)) and pred_value <= high_max:
+        risk = "High"
+    elif isinstance(med_max, (int, float)) and pred_value <= med_max:
+        risk = "Medium"
+    else:
+        risk = "Low"
+
+    return {
+        "student_id": student.get("student_id"),
+        "s_used": s,
+        "pred_next_sem_cgpa": pred_value,
+        "predicted_risk": risk
+    }
 
 def emit_progress(**data):
     print(
@@ -323,13 +473,19 @@ def main():
         semesters = student.get("semesters", {})
         if not isinstance(semesters, dict):
             continue
+        sem_nums = sorted(int(k) for k in semesters.keys() if str(k).isdigit())
+        if len(sem_nums) < 2:
+            continue
+        cgpa_final = compute_cgpa(semesters, sem_nums, len(sem_nums), GRADE_POINTS)
+        if cgpa_final is None:
+            continue
         for sem in semesters.values():
             if not isinstance(sem, dict):
                 continue
             ch = sem.get("creditHours", None)
             if ch is None or ch <= 0:
                 continue
-            sem_gpa = semester_gpa(sem, GRADE_POINTS)
+            sem_gpa = compute_semester_gpa(sem, GRADE_POINTS)
             if sem_gpa is None:
                 continue
             bucket = int(round(ch))  # Use rounded credit hours as bucket
@@ -338,25 +494,32 @@ def main():
             total_gpa_sum += sem_gpa
             total_gpa_count += 1
 
-        # ---------- BUILD FINAL CGPA DATA ----------
+        # ---------- BUILD ROLLING WINDOW DATA ----------
 
-        Xf, yf = build_features_for_final(student, GRADE_POINTS)
-        if Xf is not None and yf is not None:
-            X_final.append(Xf)
-            y_final.append(yf)
+        cgpa_1 = compute_cgpa(semesters, sem_nums, 1, GRADE_POINTS)
+        if cgpa_1 is None:
+            continue
+        for s in iter_student_windows(student):
+            cgpa_s = compute_cgpa(semesters, sem_nums, s, GRADE_POINTS)
+            if cgpa_s is None:
+                continue
+            cgpa_next = compute_cgpa(semesters, sem_nums, s + 1, GRADE_POINTS)
+            if cgpa_next is None:
+                continue
+            gpa_trend = 0.0 if s == 1 else float((cgpa_s - cgpa_1) / (s - 1))
+            X = build_features_upto_s(student, GRADE_POINTS, s, gpa_trend)
+            if X is None:
+                continue
+            X_final.append(X)
+            y_final.append(float(cgpa_final))
             sid_final.append(student["student_id"])
-
-            avg_ch = average_credit_hours(student)
-            if avg_ch is not None:
-                avg_course_loads.append(avg_ch)
-
-        # ---------- BUILD NEXT SEMESTER DATA ----------
-
-        Xn, yn = build_features_for_next_label(student, GRADE_POINTS)
-        if Xn is not None and yn is not None:
-            X_next.append(Xn)
-            y_next.append(yn)
+            X_next.append(X)
+            y_next.append(float(cgpa_next))
             sid_next.append(student["student_id"])
+
+        avg_ch = average_credit_hours(student)
+        if avg_ch is not None:
+            avg_course_loads.append(avg_ch)
 
     semester_gpa_by_load = {
         str(k): float(semester_gpa_sums[k]/semester_gpa_counts[k])
@@ -409,7 +572,15 @@ def main():
     from sklearn.svm import SVR
     from sklearn.preprocessing import StandardScaler
     import lightgbm as lgb
-    from sklearn.metrics import r2_score, mean_squared_error, accuracy_score, mean_absolute_error
+    from sklearn.metrics import (
+        r2_score,
+        mean_squared_error,
+        accuracy_score,
+        mean_absolute_error,
+        precision_recall_fscore_support,
+        confusion_matrix,
+        classification_report
+    )
 
     emit_progress(
         phase="init",
@@ -418,6 +589,7 @@ def main():
     )
 
     # Split for evaluation
+    from sklearn.model_selection import GroupShuffleSplit
     from sklearn.model_selection import train_test_split as _tts
 
     # MLP
@@ -566,6 +738,21 @@ def main():
         size = min(limit, total)
         idx = np.linspace(0, total - 1, num=size, dtype=int)
         return [{"actual": float(y_true[i]), "predicted": float(y_pred[i])} for i in idx]
+
+    def sample_residuals(y_true, y_pred, limit=200):
+        if len(y_true) == 0:
+            return []
+        total = len(y_true)
+        size = min(limit, total)
+        idx = np.linspace(0, total - 1, num=size, dtype=int)
+        return [
+            {
+                "actual": float(y_true[i]),
+                "predicted": float(y_pred[i]),
+                "residual": float(y_true[i] - y_pred[i])
+            }
+            for i in idx
+        ]
     
     def mlp_permutation_importance(model, scaler, X, y, n_repeats=5):
         """
@@ -664,10 +851,34 @@ def main():
             "testSize": int(len(yte))
         }
 
-    def train_suite(X, y, label):
+    def build_regression_report(suite):
+        if suite is None:
+            return None
+        yte = suite["test"]["y"]
+        results = suite["results"]
+        if not results:
+            return None
+        best = min(results, key=lambda r: (r["rmse_te"], r["rmse_tr"]))
+        yhat_map = {r["name"]: r["yhat_te"] for r in results}
+        residuals = []
+        if best["name"] in yhat_map:
+            residuals = sample_residuals(yte, yhat_map[best["name"]])
+        return {
+            "bestModel": str(best["name"]),
+            "metrics": build_dataset_metrics(suite),
+            "residualSamples": residuals
+        }
+
+    def train_suite(X, y, groups, label):
         if len(X) < 2 or len(y) < 2:
             raise ValueError(f"Not enough samples to train {label} models.")
-        X_tr, X_te, y_tr, y_te = _tts(X, y, test_size=TEST_SIZE, random_state=RANDOM_SEED)
+        gss = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=RANDOM_SEED)
+        train_idx, test_idx = next(gss.split(X, y, groups))
+        X_tr, X_te = X[train_idx], X[test_idx]
+        y_tr, y_te = y[train_idx], y[test_idx]
+        groups_tr = groups[train_idx]
+        groups_te = groups[test_idx]
+        assert set(groups_tr).isdisjoint(set(groups_te))
 
         models = {}
         learning_curves = {}
@@ -786,8 +997,8 @@ def main():
             "test": {"X": X_te, "y": y_te}
         }
 
-    final_suite = train_suite(X_final, y_final, "final CGPA")
-    next_suite = train_suite(X_next, y_next, "next semester") if len(y_next) > 1 else None
+    final_suite = train_suite(X_final, y_final, np.array(sid_final), "final_cgpa")
+    next_suite = train_suite(X_next, y_next, np.array(sid_next), "next_sem_cgpa") if len(y_next) > 1 else None
     if not final_suite["results"]:
         raise ValueError("No models are enabled for training.")
 
@@ -830,19 +1041,32 @@ def main():
             joblib.dump(next_suite["mlp_scaler"], out_dir/"MLPNext_Scaler.joblib")
 
     # Risk classifier
-    # Label by thresholds on true final CGPA
-    def label_risk(cgpa):
-        if cgpa <= RISK_HIGH_MAX: return "High"
-        elif cgpa <= RISK_MED_MAX: return "Medium"
+    # Label by training-fold quantiles on next-semester CGPA
+    def label_risk_by_thresholds(cgpa, high_max, med_max):
+        if cgpa <= high_max:
+            return "High"
+        if cgpa <= med_max:
+            return "Medium"
         return "Low"
-    risk_y = np.array([label_risk(v) for v in y_final])
-    unique_risk = np.unique(risk_y)
+    risk_values = y_next
     ypred_risk = None
     yc_te = None
     from sklearn.ensemble import RandomForestClassifier
-    if len(unique_risk) >= 2:
-        from sklearn.model_selection import train_test_split as _tts2
-        Xc_tr, Xc_te, yc_tr, yc_te = _tts2(X_final, risk_y, test_size=TEST_SIZE, random_state=RANDOM_SEED, stratify=risk_y)
+    if len(risk_values) >= 2:
+        gss = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=RANDOM_SEED)
+        groups_all = np.array(sid_next)
+        train_idx, test_idx = next(gss.split(X_next, risk_values, groups_all))
+        Xc_tr, Xc_te = X_next[train_idx], X_next[test_idx]
+        yv_tr, yv_te = risk_values[train_idx], risk_values[test_idx]
+        groups_tr = groups_all[train_idx]
+        groups_te = groups_all[test_idx]
+        assert set(groups_tr).isdisjoint(set(groups_te))
+        q_high = float(np.quantile(yv_tr, 0.30))
+        q_med = float(np.quantile(yv_tr, 0.70))
+        risk_thresholds = {"high_max": q_high, "med_max": q_med}
+        yc_tr = np.array([label_risk_by_thresholds(v, q_high, q_med) for v in yv_tr])
+        yc_te = np.array([label_risk_by_thresholds(v, q_high, q_med) for v in yv_te])
+        unique_risk = np.unique(yc_tr)
         from imblearn.over_sampling import SMOTE
         sm = SMOTE(random_state=RANDOM_SEED)
         Xc_tr_res, yc_tr_res = sm.fit_resample(Xc_tr, yc_tr)
@@ -853,12 +1077,84 @@ def main():
     else:
         from sklearn.dummy import DummyClassifier
         # Fall back to constant classifier if we have only one risk label
-        constant_label = unique_risk[0] if len(unique_risk) else "Low"
+        constant_label = "Low"
         risk_clf = DummyClassifier(strategy="constant", constant=constant_label)
-        risk_clf.fit(X_final, risk_y)
+        risk_clf.fit(X_next, np.array([constant_label] * len(risk_values)))
         risk_accuracy = 1.0
+        risk_thresholds = {"high_max": None, "med_max": None}
 
     joblib.dump(risk_clf, out_dir/"RiskClassifier.joblib")
+    if yc_te is None or ypred_risk is None:
+        yv_all = risk_values
+        if risk_thresholds["high_max"] is None or risk_thresholds["med_max"] is None:
+            yc_te = np.array([constant_label] * len(yv_all))
+        else:
+            yc_te = np.array([
+                label_risk_by_thresholds(v, risk_thresholds["high_max"], risk_thresholds["med_max"])
+                for v in yv_all
+            ])
+        ypred_risk = risk_clf.predict(X_next)
+    labels = [lbl for lbl in ["High", "Medium", "Low"] if lbl in set(yc_te)]
+    if not labels:
+        labels = sorted(set(yc_te))
+    prec_macro, rec_macro, f1_macro, _ = precision_recall_fscore_support(
+        yc_te,
+        ypred_risk,
+        average="macro",
+        zero_division=0
+    )
+    prec_w, rec_w, f1_w, _ = precision_recall_fscore_support(
+        yc_te,
+        ypred_risk,
+        average="weighted",
+        zero_division=0
+    )
+    cm = confusion_matrix(yc_te, ypred_risk, labels=labels).tolist()
+
+    # Determine storage root so we can emit static URLs
+    storage_root = None
+    for idx, part in enumerate(out_dir.parts):
+        if part == "storage":
+            storage_root = Path(*out_dir.parts[:idx + 1])
+            break
+
+    def to_static_path(path_obj: Path) -> str:
+        if storage_root is not None:
+            try:
+                rel = path_obj.relative_to(storage_root)
+                return "/static/" + rel.as_posix()
+            except Exception:
+                pass
+        return str(path_obj)
+
+    report_created_at = datetime.datetime.utcnow().isoformat() + "Z"
+    report = {
+        "schema_version": SCHEMA_VERSION,
+        "created_at": report_created_at,
+        "splitting": {
+            "method": "GroupShuffleSplit",
+            "test_size": float(TEST_SIZE)
+        },
+        "regression": {
+            "next_sem_cgpa": build_regression_report(next_suite),
+            "final_cgpa": build_regression_report(final_suite)
+        },
+        "classification": {
+            "risk_target": "next_sem_cgpa",
+            "thresholds": risk_thresholds,
+            "labels": labels,
+            "accuracy": float(risk_accuracy),
+            "precision_macro": float(prec_macro),
+            "recall_macro": float(rec_macro),
+            "f1_macro": float(f1_macro),
+            "precision_weighted": float(prec_w),
+            "recall_weighted": float(rec_w),
+            "f1_weighted": float(f1_w),
+            "confusion_matrix": cm
+        }
+    }
+    with open(out_dir/"report.json", "w") as f:
+        json.dump(report, f, indent=2)
 
     # Metadata
     meta = {
@@ -895,27 +1191,14 @@ def main():
             "unique_students_final": len(set(sid_final)),
             "unique_students_next": len(set(sid_next)),
             "rows_final": len(sid_final),
-            "rows_next": len(sid_next)
-        }
+            "rows_next": len(sid_next),
+            "avg_rows_per_student": (len(sid_next) / len(set(sid_next))) if len(set(sid_next)) else 0.0
+        },
+        "risk_thresholds": risk_thresholds,
+        "report_path": to_static_path(out_dir/"report.json")
     }
     with open(out_dir/"metadata.json", "w") as f:
         json.dump(meta, f, indent=2)
-
-    # Determine storage root so we can emit static URLs
-    storage_root = None
-    for idx, part in enumerate(out_dir.parts):
-        if part == "storage":
-            storage_root = Path(*out_dir.parts[:idx + 1])
-            break
-
-    def to_static_path(path_obj: Path) -> str:
-        if storage_root is not None:
-            try:
-                rel = path_obj.relative_to(storage_root)
-                return "/static/" + rel.as_posix()
-            except Exception:
-                pass
-        return str(path_obj)
 
     # --------- Plotting (best-effort, won't crash training) ---------
     saved_plots = {}
@@ -1047,3 +1330,8 @@ if __name__ == "__main__":
         print(f"[ERROR] {e}", file=sys.stderr)
         print("__RESULT__" + json.dumps({"status":"error","error":str(e)}, separators=(",", ":")), flush=True)
         sys.exit(1)
+
+if __name__ == "__main__" and False:
+    # Example usage of predict_single_student
+    # This block must NEVER run by default
+    pass

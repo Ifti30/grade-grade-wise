@@ -31,49 +31,94 @@ def semester_gpa(sem, GP):
             pts.append(GP[g])
     return float(np.mean(pts)) if pts else None
 
-def build_features_for_final(student, GP):
+def compute_cgpa(semesters, sem_nums, upto, GP):
+    use = sem_nums[:upto]
+    total_points = 0.0
+    total_hours = 0.0
+    for sem_no in use:
+        sem = semesters.get(str(sem_no))
+        if not isinstance(sem, dict):
+            continue
+        sem_gpa = semester_gpa(sem, GP)
+        if sem_gpa is None:
+            continue
+        ch = sem.get("creditHours")
+        if not isinstance(ch, (int, float)) or ch <= 0:
+            continue
+        total_points += sem_gpa * float(ch)
+        total_hours += float(ch)
+    if total_hours <= 0:
+        return None
+    return float(total_points / total_hours)
+
+def build_features_for_final(student, GP, feature_order):
     semesters = student.get("semesters", {})
     if not semesters: return None, None
     sem_nums = sorted(map(int, semesters.keys()))
     if len(sem_nums) < 2: return None, None
     upto = sem_nums[-2]
-    att, sem_gpas = [], []
+    att, credit_hours = [], []
     for s in sem_nums:
         if s <= upto:
             sem = semesters[str(s)]
             if "attendancePercentage" in sem: att.append(sem["attendancePercentage"])
-            g = semester_gpa(sem, GP)
-            if g is not None: sem_gpas.append(g)
+            ch = sem.get("creditHours")
+            if isinstance(ch, (int, float)) and ch > 0:
+                credit_hours.append(ch)
     avg_att = float(np.mean(att)) if att else 0.0
-    gpa_trend = (sem_gpas[-1]-sem_gpas[-2]) if len(sem_gpas)>=2 else 0.0
-    X = [
-        float(student.get("ssc_gpa", 0.0)),
-        float(student.get("hsc_gpa", 0.0)),
-        1 if str(student.get("gender","")).lower()=="female" else 0,
-        int(student.get("birth_year", 0)),
-        avg_att, gpa_trend
-    ]
+    s_count = len(sem_nums) - 1
+    cgpa_1 = compute_cgpa(semesters, sem_nums, 1, GP)
+    cgpa_s = compute_cgpa(semesters, sem_nums, s_count, GP)
+    if cgpa_1 is None or cgpa_s is None:
+        return None, None
+    gpa_trend = 0.0 if s_count == 1 else float((cgpa_s - cgpa_1) / (s_count - 1))
+    avg_ch = float(np.mean(credit_hours)) if credit_hours else 0.0
+    feature_map = {
+        "ssc_gpa": float(student.get("ssc_gpa", 0.0)),
+        "hsc_gpa": float(student.get("hsc_gpa", 0.0)),
+        "gender_bin": 1 if str(student.get("gender", "")).lower() == "female" else 0,
+        "birth_year": int(student.get("birth_year", 0)),
+        "avg_credit_hours": avg_ch,
+        "avg_attendance": avg_att,
+        "gpa_trend": float(gpa_trend)
+    }
+    X = [feature_map.get(name, 0.0) for name in feature_order]
+    assert len(X) == len(feature_order)
     return X, None
 
-def build_features_for_next(student, GP):
+def build_features_for_next(student, GP, feature_order):
     semesters = student.get("semesters", {})
     if not semesters: return None
     sem_nums = sorted(map(int, semesters.keys()))
-    att, sem_gpas = [], []
-    for s in sem_nums:
+    if len(sem_nums) < 2:
+        return None
+    use = sem_nums[:-1]
+    att, credit_hours = [], []
+    for s in use:
         sem = semesters[str(s)]
         if "attendancePercentage" in sem: att.append(sem["attendancePercentage"])
-        g = semester_gpa(sem, GP)
-        if g is not None: sem_gpas.append(g)
+        ch = sem.get("creditHours")
+        if isinstance(ch, (int, float)) and ch > 0:
+            credit_hours.append(ch)
     avg_att = float(np.mean(att)) if att else 0.0
-    gpa_trend = (sem_gpas[-1]-sem_gpas[-2]) if len(sem_gpas)>=2 else 0.0
-    X = [
-        float(student.get("ssc_gpa", 0.0)),
-        float(student.get("hsc_gpa", 0.0)),
-        1 if str(student.get("gender","")).lower()=="female" else 0,
-        int(student.get("birth_year", 0)),
-        avg_att, gpa_trend
-    ]
+    s_count = len(use)
+    cgpa_1 = compute_cgpa(semesters, sem_nums, 1, GP)
+    cgpa_s = compute_cgpa(semesters, sem_nums, s_count, GP)
+    if cgpa_1 is None or cgpa_s is None:
+        return None
+    gpa_trend = 0.0 if s_count == 1 else float((cgpa_s - cgpa_1) / (s_count - 1))
+    avg_ch = float(np.mean(credit_hours)) if credit_hours else 0.0
+    feature_map = {
+        "ssc_gpa": float(student.get("ssc_gpa", 0.0)),
+        "hsc_gpa": float(student.get("hsc_gpa", 0.0)),
+        "gender_bin": 1 if str(student.get("gender", "")).lower() == "female" else 0,
+        "birth_year": int(student.get("birth_year", 0)),
+        "avg_credit_hours": avg_ch,
+        "avg_attendance": avg_att,
+        "gpa_trend": float(gpa_trend)
+    }
+    X = [feature_map.get(name, 0.0) for name in feature_order]
+    assert len(X) == len(feature_order)
     return X
 
 def compute_current(student, GP):
@@ -83,13 +128,7 @@ def compute_current(student, GP):
     last = sem_nums[-1]
     sem = sems[str(last)]
     last_sem_gpa = semester_gpa(sem, GP)
-    # cgpa to date
-    tot=0.0; cnt=0
-    for s in sems.values():
-        for k,g in s.items():
-            if k!="attendancePercentage" and g in GP:
-                tot += GP[g]; cnt += 1
-    cgpa = (tot/cnt) if cnt>0 else None
+    cgpa = compute_cgpa(sems, sem_nums, len(sem_nums), GP)
     return last_sem_gpa, cgpa, last
 
 def average_course_load(student):
@@ -202,11 +241,17 @@ def main():
         mlp_next_model = mlp_model
         mlp_next_scaler = mlp_scaler
 
-    risk_clf = joblib.load(art_dir/"RiskClassifier.joblib")
+    report_path = art_dir/"report.json"
+    report = None
+    if report_path.exists():
+        try:
+            report = json.load(open(report_path, "r"))
+        except Exception:
+            report = None
 
     # Features
-    Xf_new, _ = build_features_for_final(student, GP)
-    Xn_new = build_features_for_next(student, GP)
+    Xf_new, _ = build_features_for_final(student, GP, feat_order)
+    Xn_new = build_features_for_next(student, GP, feat_order)
 
     # Current
     cur_sem_gpa, cur_cgpa, last_sem_idx = compute_current(student, GP)
@@ -304,15 +349,20 @@ def main():
             }
         }
 
-    # Risk
-    try:
-        if Xn_new is not None:
-            risk_label = str(risk_clf.predict(np.array(Xn_new, float).reshape(1,-1))[0])
+    # Risk from predicted next_sem_cgpa thresholds
+    risk_label = "Unknown"
+    thresholds = meta.get("risk_thresholds")
+    if not thresholds and report:
+        thresholds = report.get("classification", {}).get("thresholds")
+    high_max = thresholds.get("high_max") if isinstance(thresholds, dict) else None
+    med_max = thresholds.get("med_max") if isinstance(thresholds, dict) else None
+    if ens_next is not None and isinstance(high_max, (int, float)) and isinstance(med_max, (int, float)):
+        if ens_next <= high_max:
+            risk_label = "High"
+        elif ens_next <= med_max:
+            risk_label = "Medium"
         else:
-            risk_label = "Unknown"
-    except Exception as e:
-        print(f"[WARN] risk prediction failed: {e}")
-        risk_label = "Unknown"
+            risk_label = "Low"
 
     plots = {}
     if plt is not None:
@@ -354,8 +404,10 @@ def main():
         except Exception as e:
             print(f"[WARN] prediction plotting failed: {e}")
 
+    s_used = len(student.get("semesters", {})) - 1
     result_payload = {
         "student_id": student.get("student_id"),
+        "s_used": s_used,
         "current": {"last_sem_index": last_sem_idx, "last_sem_gpa": cur_sem_gpa, "current_cgpa": cur_cgpa},
         "predictions": {
             "final_cgpa": preds_final,
@@ -392,6 +444,7 @@ def main():
         "creditHours": result_payload["credit_hours"],
         "courseLoad": result_payload["course_load"],
         "risk": risk_label,
+        "sUsed": s_used,
         "current": result_payload["current"],
         "outFile": str(out_file),
         "max_gpa": max_gpa,

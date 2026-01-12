@@ -15,7 +15,7 @@ import { CustomFileInput } from '@/components/ui/CustomFileInput';
 const DEFAULT_CONFIG: any = {
   RANDOM_SEED: 42,
   TEST_SIZE: 0.2,
-  THREADS: 4,
+  THREADS: 5,
   DT_ENABLE: true,
   DT_MAX_DEPTH: 0,
   DT_MIN_SAMPLES_LEAF: 1,
