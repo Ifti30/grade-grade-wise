@@ -753,6 +753,19 @@ def main():
             }
             for i in idx
         ]
+
+    def make_histogram(values, bins=20):
+        if values is None or len(values) == 0:
+            return []
+        counts, edges = np.histogram(values, bins=bins)
+        return [
+            {
+                "binStart": float(edges[i]),
+                "binEnd": float(edges[i + 1]),
+                "count": int(counts[i])
+            }
+            for i in range(len(counts))
+        ]
     
     def mlp_permutation_importance(model, scaler, X, y, n_repeats=5):
         """
@@ -866,7 +879,8 @@ def main():
         return {
             "bestModel": str(best["name"]),
             "metrics": build_dataset_metrics(suite),
-            "residualSamples": residuals
+            "residualSamples": residuals,
+            "split": suite.get("split")
         }
 
     def train_suite(X, y, groups, label):
@@ -994,7 +1008,8 @@ def main():
             "results": results,
             "learning_curves": learning_curves,
             "feature_importance": feature_importance,
-            "test": {"X": X_te, "y": y_te}
+            "test": {"X": X_te, "y": y_te},
+            "split": {"train_size": int(len(y_tr)), "test_size": int(len(y_te))}
         }
 
     final_suite = train_suite(X_final, y_final, np.array(sid_final), "final_cgpa")
@@ -1127,6 +1142,14 @@ def main():
                 pass
         return str(path_obj)
 
+    dataset_stats = {
+        "students_total": len(data),
+        "unique_students_final": len(set(sid_final)),
+        "unique_students_next": len(set(sid_next)),
+        "rows_final": len(sid_final),
+        "rows_next": len(sid_next),
+        "avg_rows_per_student": (len(sid_next) / len(set(sid_next))) if len(set(sid_next)) else 0.0
+    }
     report_created_at = datetime.datetime.utcnow().isoformat() + "Z"
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -1138,6 +1161,11 @@ def main():
         "regression": {
             "next_sem_cgpa": build_regression_report(next_suite),
             "final_cgpa": build_regression_report(final_suite)
+        },
+        "dataset": {
+            "stats": dataset_stats,
+            "final_cgpa_hist": make_histogram(y_final),
+            "next_sem_cgpa_hist": make_histogram(y_next)
         },
         "classification": {
             "risk_target": "next_sem_cgpa",
@@ -1186,16 +1214,10 @@ def main():
             "overall_semester_gpa": overall_semester_gpa,
             "overall_final_cgpa": overall_final_cgpa
         },
-        "dataset_stats": {
-            "students_total": len(data),
-            "unique_students_final": len(set(sid_final)),
-            "unique_students_next": len(set(sid_next)),
-            "rows_final": len(sid_final),
-            "rows_next": len(sid_next),
-            "avg_rows_per_student": (len(sid_next) / len(set(sid_next))) if len(set(sid_next)) else 0.0
-        },
+        "dataset_stats": dataset_stats,
         "risk_thresholds": risk_thresholds,
-        "report_path": to_static_path(out_dir/"report.json")
+        "report_path": to_static_path(out_dir/"report.json"),
+        "mlp_hidden": int(MLP_HIDDEN)
     }
     with open(out_dir/"metadata.json", "w") as f:
         json.dump(meta, f, indent=2)

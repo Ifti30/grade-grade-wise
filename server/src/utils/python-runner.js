@@ -224,8 +224,8 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
   });
 
   return new Promise((resolve, reject) => {
-    pythonProcess.on('close', async (code) => {
-      console.log('[train] process closed', { code });
+    pythonProcess.on('close', async (code, signal) => {
+      console.log('[train] process closed', { code, signal });
       const { result, error } = catcher.getResult();
       if (!resultJson && result) {
         resultJson = result;
@@ -238,8 +238,11 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
       console.log('[train] result', resultJson);
 
       if (!resultJson || resultJson.status !== 'ok') {
+        const exitNote = code === null && signal
+          ? `Training process terminated by signal ${signal}.`
+          : `Training process exited with code ${code}.`;
         try {
-          await logHandle.write(`Training process exited with code ${code}.\n`);
+          await logHandle.write(`${exitNote}\n`);
         } catch (writeErr) {
           console.error('Failed to write close error to log:', writeErr);
         }
@@ -290,7 +293,11 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
           console.error('Prisma update (FAILED) failed:', e);
         }
 
-        const errMsg = resultJson?.error || `Training failed with code ${code}\n${stderr.slice(-4000)}`;
+        const errMsg = resultJson?.error || (
+          code === null && signal
+            ? `Training failed (signal ${signal}).\n${stderr.slice(-4000)}`
+            : `Training failed with code ${code}\n${stderr.slice(-4000)}`
+        );
         console.error('[train] failed', errMsg);
         reject(new Error(errMsg));
       }

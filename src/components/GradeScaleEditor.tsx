@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -14,6 +14,10 @@ export function GradeScaleEditor({ value, onChange }: GradeScaleEditorProps) {
   const [entries, setEntries] = useState(
     Object.entries(value).map(([grade, points]) => ({ grade, points }))
   );
+
+  useEffect(() => {
+    setEntries(Object.entries(value).map(([grade, points]) => ({ grade, points })));
+  }, [value]);
 
   const handleUpdate = (index: number, field: 'grade' | 'points', newValue: string) => {
     const updated = [...entries];

@@ -338,6 +338,15 @@ router.get('/summary', authenticateToken, async (req, res) => {
       metrics,
       plots: normalizePlotMap(lastSucceeded.plots),
       artifactsDir: lastSucceeded.artifactsDir,
+      report: await (async () => {
+        try {
+          const reportPath = path.join(lastSucceeded.artifactsDir, 'report.json');
+          const raw = await fs.readFile(reportPath, 'utf-8');
+          return JSON.parse(raw);
+        } catch {
+          return null;
+        }
+      })(),
       createdAt: lastSucceeded.createdAt,
       config: lastSucceeded.config
     });

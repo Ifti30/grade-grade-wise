@@ -62,6 +62,14 @@ const buildComparisonSeries = (models: Record<string, any>, names: string[], key
     [key]: models?.[name]?.[key]
   })).filter(entry => entry[key] != null);
 
+const buildHistogramData = (hist?: { binStart: number; binEnd: number; count: number }[]) => {
+  if (!hist || !hist.length) return [];
+  return hist.map((bin) => ({
+    bin: `${formatDecimal(bin.binStart, 2)}–${formatDecimal(bin.binEnd, 2)}`,
+    count: bin.count
+  }));
+};
+
 const ChartCard = ({ title, children }: { title: string; children: React.ReactNode }) => (
   <Card className="p-4 bg-card/40 border-border/50 space-y-3">
     <h5 className="text-sm font-semibold text-foreground">{title}</h5>
@@ -79,6 +87,18 @@ const MetricBarChart = ({ data, dataKey, label }: { data: any[]; dataKey: string
       <Bar dataKey={dataKey} radius={[6, 6, 0, 0]}>
         {data.map((entry) => <Cell key={entry.name} fill={entry.color || '#94a3b8'} />)}
       </Bar>
+    </BarChart>
+  </ChartContainer>
+);
+
+const HistogramChart = ({ data, label }: { data: { bin: string; count: number }[]; label: string }) => (
+  <ChartContainer config={{ count: { label } }} className="h-56 w-full">
+    <BarChart data={data}>
+      <CartesianGrid strokeDasharray="3 3" />
+      <XAxis dataKey="bin" interval="preserveStartEnd" />
+      <YAxis allowDecimals={false} />
+      <ChartTooltip content={<ChartTooltipContent />} />
+      <Bar dataKey="count" fill="#6366f1" radius={[6, 6, 0, 0]} />
     </BarChart>
   </ChartContainer>
 );
@@ -113,6 +133,12 @@ export default function TrainingComplete() {
   const finalMetrics = metrics.final;
   const nextMetrics = metrics.next;
   const modelNames = Array.from(new Set(enabledModels));
+  const report = summary.report || {};
+  const datasetStats = report.dataset?.stats || {};
+  const finalHist = buildHistogramData(report.dataset?.final_cgpa_hist);
+  const nextHist = buildHistogramData(report.dataset?.next_sem_cgpa_hist);
+  const finalSplit = report.regression?.final_cgpa?.split || {};
+  const nextSplit = report.regression?.next_sem_cgpa?.split || {};
 
   const finalMaeData = buildComparisonSeries(finalMetrics?.models, modelNames, 'mae');
   const finalRmseData = buildComparisonSeries(finalMetrics?.models, modelNames, 'rmse');
@@ -148,6 +174,54 @@ export default function TrainingComplete() {
               <p className="text-3xl font-bold text-foreground">{summaryMetrics.r2 != null ? summaryMetrics.r2.toFixed(3) : '—'}</p>
             </Card>
           </div>
+        )}
+
+        {/* Dataset Overview */}
+        {(datasetStats.students_total != null || finalHist.length || nextHist.length) && (
+          <Card className="p-6 bg-card/50 border-border/50 space-y-4">
+            <div className="flex items-center gap-3">
+              <BarChart3 className="h-5 w-5 text-accent" />
+              <h3 className="text-lg font-semibold text-foreground">Dataset Overview</h3>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+                <p className="text-xs text-muted-foreground">Students</p>
+                <p className="text-lg font-semibold text-foreground">{datasetStats.students_total ?? '—'}</p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+                <p className="text-xs text-muted-foreground">Training Samples</p>
+                <p className="text-lg font-semibold text-foreground">{datasetStats.rows_final ?? '—'}</p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+                <p className="text-xs text-muted-foreground">Final Split</p>
+                <p className="text-sm font-semibold text-foreground">
+                  {finalSplit.train_size != null && finalSplit.test_size != null
+                    ? `${finalSplit.train_size} / ${finalSplit.test_size}`
+                    : '—'}
+                </p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+                <p className="text-xs text-muted-foreground">Next Split</p>
+                <p className="text-sm font-semibold text-foreground">
+                  {nextSplit.train_size != null && nextSplit.test_size != null
+                    ? `${nextSplit.train_size} / ${nextSplit.test_size}`
+                    : '—'}
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {finalHist.length > 0 && (
+                <ChartCard title="Final CGPA Histogram">
+                  <HistogramChart data={finalHist} label="Count" />
+                </ChartCard>
+              )}
+              {nextHist.length > 0 && (
+                <ChartCard title="Next-Sem CGPA Histogram">
+                  <HistogramChart data={nextHist} label="Count" />
+                </ChartCard>
+              )}
+            </div>
+          </Card>
         )}
 
         {/* Model Insights */}

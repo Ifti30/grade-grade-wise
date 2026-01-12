@@ -107,7 +107,7 @@ export function PredictionDetails({ prediction, profile }: PredictionDetailsProp
   const predictions = prediction.results || {};
 
   const finalCgpa = predictions.final_cgpa || {};
-  const nextSem = predictions.next_sem_gpa || {};
+  const nextSem = predictions.next_sem_cgpa || {};
   const ensemble = summary.ensemble || predictions.ensemble || {};
   const loadAdjusted = summary.loadAdjusted || summary.load_adjusted || null;
   const loadContext = loadAdjusted?.context || null;
@@ -122,13 +122,13 @@ export function PredictionDetails({ prediction, profile }: PredictionDetailsProp
   const creditHours = toNumber(summary.creditHours ?? summary.credit_hours);
   const courseLoad = toNumber(summary.courseLoad ?? summary.course_load);
   const baselineFinal = ensemble.final_cgpa_mean ?? averageValues(finalCgpa);
-  const baselineNext = ensemble.next_sem_gpa_mean ?? averageValues(nextSem);
+  const baselineNext = ensemble.next_sem_cgpa_mean ?? averageValues(nextSem);
   const adjustedFinal =
     loadAdjusted?.ensemble?.final_cgpa_mean ?? averageValues(loadAdjusted?.final_cgpa);
   const adjustedNext =
-    loadAdjusted?.ensemble?.next_sem_gpa_mean ?? averageValues(loadAdjusted?.next_sem_gpa);
+    loadAdjusted?.ensemble?.next_sem_cgpa_mean ?? averageValues(loadAdjusted?.next_sem_cgpa);
   const deltaFinal = loadAdjusted?.delta?.final_cgpa ?? null;
-  const deltaNext = loadAdjusted?.delta?.next_sem_gpa ?? null;
+  const deltaNext = loadAdjusted?.delta?.next_sem_cgpa ?? null;
   const comparisonData = [
     {
       label: 'Next',
@@ -407,7 +407,7 @@ export function PredictionDetails({ prediction, profile }: PredictionDetailsProp
         </Card>
       )}
 
-        {(ensemble.final_cgpa_mean || ensemble.next_sem_gpa_mean) && (
+        {(ensemble.final_cgpa_mean || ensemble.next_sem_cgpa_mean) && (
             <div className="space-y-4">
                 <p className="text-lg font-semibold">Ensemble Averages</p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -415,7 +415,7 @@ export function PredictionDetails({ prediction, profile }: PredictionDetailsProp
                         className="rounded-xl border bg-card text-card-foreground shadow p-6 flex flex-col items-start gap-2">
                         <p className="text-sm font-medium text-muted-foreground">Next Sem GPA (Mean)</p>
                         <div className="flex items-baseline gap-2">
-                            <p className="text-4xl font-bold tracking-tight">{formatGpa(ensemble.next_sem_gpa_mean)}</p>
+                            <p className="text-4xl font-bold tracking-tight">{formatGpa(ensemble.next_sem_cgpa_mean)}</p>
                         </div>
                     </div>
                     <div

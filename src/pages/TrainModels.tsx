@@ -166,11 +166,13 @@ const renderDistribution = (
 export default function TrainModels({ embedded = false }: { embedded?: boolean }) {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [file, setFile] = useState<File | null>(null);
+  const [gradeScaleFile, setGradeScaleFile] = useState<File | null>(null);
   const [training, setTraining] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
   const [trainingStatus, setTrainingStatus] = useState<string | null>(null);
   const [datasetProfile, setDatasetProfile] = useState<DatasetProfile | null>(null);
   const [datasetError, setDatasetError] = useState<string | null>(null);
+  const [gradeScaleError, setGradeScaleError] = useState<string | null>(null);
   const navigate = useNavigate();
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -299,6 +301,42 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
         setDatasetProfile(profile);
       } catch (error: any) {
         setDatasetError(error?.message || 'Failed to parse dataset.');
+      }
+    }
+  };
+
+  const handleGradeScaleChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const selectedFile = e.target.files[0];
+      setGradeScaleFile(selectedFile);
+      setGradeScaleError(null);
+      try {
+        const text = await selectedFile.text();
+        const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          setGradeScaleError('Grade scale must be a JSON object of grade points.');
+          return;
+        }
+        const entries = Object.entries(parsed);
+        if (entries.length < 2 || entries.length > 30) {
+          setGradeScaleError('Grade scale must have between 2 and 30 entries.');
+          return;
+        }
+        const next: Record<string, number> = {};
+        for (const [key, value] of entries) {
+          if (typeof key !== 'string') {
+            setGradeScaleError('Grade scale keys must be strings.');
+            return;
+          }
+          if (typeof value !== 'number' || Number.isNaN(value)) {
+            setGradeScaleError('Grade scale values must be numbers.');
+            return;
+          }
+          next[key] = value;
+        }
+        setConfig((prev) => ({ ...prev, GRADE_POINTS: next }));
+      } catch (error: any) {
+        setGradeScaleError(error?.message || 'Failed to parse grade scale JSON.');
       }
     }
   };
@@ -441,8 +479,23 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
       {/* Grade Scale */}
       <GradeScaleEditor
         value={config.GRADE_POINTS}
-        onChange={(gradePoints) => setConfig({ ...config, GRADE_POINTS: gradePoints })}
+        onChange={(gradePoints) => {
+          setConfig({ ...config, GRADE_POINTS: gradePoints });
+        }}
       />
+
+      <div className="space-y-2">
+        <Label className="text-sm font-semibold" htmlFor="grade-scale-upload">Upload Grade Scale (JSON)</Label>
+        <CustomFileInput
+          id="grade-scale-upload"
+          file={gradeScaleFile}
+          onFileChange={handleGradeScaleChange}
+          accept=".json,application/json"
+        />
+        {gradeScaleError && (
+          <div className="text-xs text-destructive">{gradeScaleError}</div>
+        )}
+      </div>
 
       {/* File Upload */}
       <div className="space-y-4">

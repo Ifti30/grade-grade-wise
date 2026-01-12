@@ -92,7 +92,7 @@ def build_features_for_next(student, GP, feature_order):
     sem_nums = sorted(map(int, semesters.keys()))
     if len(sem_nums) < 2:
         return None
-    use = sem_nums[:-1]
+    use = sem_nums
     att, credit_hours = [], []
     for s in use:
         sem = semesters[str(s)]
@@ -131,7 +131,7 @@ def compute_current(student, GP):
     cgpa = compute_cgpa(sems, sem_nums, len(sem_nums), GP)
     return last_sem_gpa, cgpa, last
 
-def average_course_load(student):
+def average_credit_hours(student):
     semesters = student.get("semesters", {})
     if not semesters:
         return None
@@ -139,9 +139,9 @@ def average_course_load(student):
     for sem in semesters.values():
         if not isinstance(sem, dict):
             continue
-        load = sum(1 for k in sem if k != "attendancePercentage")
-        if load > 0:
-            loads.append(load)
+        ch = sem.get("creditHours")
+        if isinstance(ch, (int, float)) and ch > 0:
+            loads.append(ch)
     if not loads:
         return None
     return float(np.mean(loads))
@@ -159,6 +159,29 @@ def main():
     student = json.load(open(args.student_json,"r"))
     art_dir = Path(args.artifacts_dir)
     out_file = Path(args.out_file)
+
+    def emit_error(message: str):
+        print("__RESULT__" + json.dumps({"status": "error", "error": message}))
+        return 1
+
+    semesters = student.get("semesters", {})
+    if not isinstance(semesters, dict):
+        return emit_error("Missing semesters data for prediction.")
+    sem_nums = sorted(int(k) for k in semesters.keys() if str(k).isdigit())
+    s_used = len(sem_nums)
+    if s_used < 1:
+        return emit_error("Not enough semesters to predict next_sem_cgpa.")
+    has_credit_hours = False
+    for sem_no in sem_nums:
+        sem = semesters.get(str(sem_no))
+        if not isinstance(sem, dict):
+            continue
+        ch = sem.get("creditHours")
+        if isinstance(ch, (int, float)) and ch > 0:
+            has_credit_hours = True
+            break
+    if not has_credit_hours:
+        return emit_error("Missing creditHours for completed semesters; cannot compute features.")
 
     meta = json.load(open(art_dir/"metadata.json", "r"))
     GP = meta.get("grade_points", {
@@ -187,22 +210,24 @@ def main():
         return str(path_obj)
 
     print(f"[INFO] org={org_id} student={student.get('student_id')} max_gpa={max_gpa}")
+    print(f"[INFO] using semesters 1..{s_used} for next_sem_cgpa prediction")
 
-    enabled_models = set(meta.get("enabled_models") or [])
+    enabled_final = set(meta.get("enabled_models") or [])
+    enabled_next = set(meta.get("next_models") or enabled_final)
 
     # Load models
     models = {}
     for name in ["DecisionTree","RandomForest","LightGBM","SVR"]:
         p = art_dir/f"{name}.joblib"
-        if p.exists() and (not enabled_models or name in enabled_models):
+        if p.exists() and (not enabled_final or name in enabled_final):
             models[name] = joblib.load(p)
 
     next_models = {}
     for name in ["DecisionTree","RandomForest","LightGBM","SVR"]:
         p = art_dir/f"{name}Next.joblib"
-        if p.exists() and (not enabled_models or name in enabled_models):
+        if p.exists() and (not enabled_next or name in enabled_next):
             next_models[name] = joblib.load(p)
-        elif name in models:
+        elif name in models and (not enabled_next or name in enabled_next):
             next_models[name] = models[name]
 
     # MLP + scaler
@@ -222,8 +247,9 @@ def main():
     mlp_scaler = None
     mlp_path = art_dir/"MLP.pt"
     mlp_scaler_path = art_dir/"MLP_Scaler.joblib"
-    if mlp_path.exists() and mlp_scaler_path.exists() and (not enabled_models or "MLP" in enabled_models):
-        mlp_model = MLP(in_dim=len(feat_order), hid=64)
+    mlp_hidden = int(meta.get("mlp_hidden", 64))
+    if mlp_path.exists() and mlp_scaler_path.exists() and (not enabled_final or "MLP" in enabled_final):
+        mlp_model = MLP(in_dim=len(feat_order), hid=mlp_hidden)
         mlp_model.load_state_dict(torch.load(mlp_path, map_location="cpu"))
         mlp_model.eval()
         mlp_scaler = joblib.load(mlp_scaler_path)
@@ -232,12 +258,12 @@ def main():
     mlp_next_scaler = None
     mlp_next_path = art_dir/"MLPNext.pt"
     mlp_next_scaler_path = art_dir/"MLPNext_Scaler.joblib"
-    if mlp_next_path.exists() and mlp_next_scaler_path.exists() and (not enabled_models or "MLP" in enabled_models):
-        mlp_next_model = MLP(in_dim=len(feat_order), hid=64)
+    if mlp_next_path.exists() and mlp_next_scaler_path.exists() and (not enabled_next or "MLP" in enabled_next):
+        mlp_next_model = MLP(in_dim=len(feat_order), hid=mlp_hidden)
         mlp_next_model.load_state_dict(torch.load(mlp_next_path, map_location="cpu"))
         mlp_next_model.eval()
         mlp_next_scaler = joblib.load(mlp_next_scaler_path)
-    elif mlp_model is not None and mlp_scaler is not None:
+    elif (not enabled_next or "MLP" in enabled_next) and mlp_model is not None and mlp_scaler is not None:
         mlp_next_model = mlp_model
         mlp_next_scaler = mlp_scaler
 
@@ -302,6 +328,8 @@ def main():
     if credit_hours is not None:
         try:
             if credit_hours > 0:
+                # Optional heuristic adjustment (not part of model training).
+                # Assumes 3 credit hours per subject.
                 course_load = credit_hours / 3.0
                 course_load = max(1.0, min(7.0, float(course_load)))
         except Exception:
@@ -311,7 +339,7 @@ def main():
     if course_load is not None:
         base_load = baseline_course_load
         if base_load is None:
-            base_load = average_course_load(student)
+            base_load = average_credit_hours(student)
         if base_load is None or base_load <= 0:
             base_load = 4.0
         coefficient = 0.10
@@ -328,10 +356,10 @@ def main():
 
         load_adjusted = {
             "final_cgpa": adjusted_final,
-            "next_sem_gpa": adjusted_next,
+            "next_sem_cgpa": adjusted_next,
             "ensemble": {
                 "final_cgpa_mean": adj_final_mean,
-                "next_sem_gpa_mean": adj_next_mean
+                "next_sem_cgpa_mean": adj_next_mean
             },
             "context": {
                 "baseline_course_load": float(base_load),
@@ -345,7 +373,7 @@ def main():
             },
             "delta": {
                 "final_cgpa_mean": (adj_final_mean - ens_final) if (adj_final_mean is not None and ens_final is not None) else None,
-                "next_sem_gpa_mean": (adj_next_mean - ens_next) if (adj_next_mean is not None and ens_next is not None) else None
+                "next_sem_cgpa_mean": (adj_next_mean - ens_next) if (adj_next_mean is not None and ens_next is not None) else None
             }
         }
 
@@ -393,26 +421,25 @@ def main():
                 models = list(preds_next.keys())
                 values = [preds_next[m] for m in models]
                 ax.bar(models, values, color='#6366f1')
-                ax.set_ylabel("Predicted Next Sem GPA")
-                ax.set_title("Next Semester GPA Predictions")
+                ax.set_ylabel("Predicted Next Sem CGPA")
+                ax.set_title("Next Semester CGPA Predictions")
                 ax.tick_params(axis='x', rotation=30)
                 plt.tight_layout()
-                next_plot = out_file.with_name(out_file.stem + "_next_sem_gpa.png")
+                next_plot = out_file.with_name(out_file.stem + "_next_sem_cgpa.png")
                 plt.savefig(next_plot)
                 plt.close(fig)
-                plots["next_sem_gpa_comparison"] = to_static_path(next_plot)
+                plots["next_sem_cgpa_comparison"] = to_static_path(next_plot)
         except Exception as e:
             print(f"[WARN] prediction plotting failed: {e}")
 
-    s_used = len(student.get("semesters", {})) - 1
     result_payload = {
         "student_id": student.get("student_id"),
         "s_used": s_used,
         "current": {"last_sem_index": last_sem_idx, "last_sem_gpa": cur_sem_gpa, "current_cgpa": cur_cgpa},
         "predictions": {
             "final_cgpa": preds_final,
-            "next_sem_gpa": preds_next,
-            "ensemble": {"final_cgpa_mean": ens_final, "next_sem_gpa_mean": ens_next}
+            "next_sem_cgpa": preds_next,
+            "ensemble": {"final_cgpa_mean": ens_final, "next_sem_cgpa_mean": ens_next}
         },
         "credit_hours": credit_hours,
         "course_load": course_load,

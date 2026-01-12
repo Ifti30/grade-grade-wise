@@ -124,6 +124,55 @@ const buildCurveData = (curve?: { train?: number[]; valid?: number[] }) => {
   }));
 };
 
+const buildHistogramData = (
+  hist?: { bins?: number[]; counts?: number[] } | { binStart: number; binEnd: number; count: number }[]
+) => {
+  if (!hist) return [];
+  if (Array.isArray(hist)) {
+    return hist.map((entry) => ({
+      bin: `${formatDecimal(entry.binStart, 2)}-${formatDecimal(entry.binEnd, 2)}`,
+      count: entry.count
+    }));
+  }
+  if (!hist.bins || !hist.counts) return [];
+  const length = Math.min(hist.bins.length, hist.counts.length);
+  return Array.from({ length }, (_, index) => ({
+    bin: formatDecimal(hist.bins[index], 2),
+    count: hist.counts[index] ?? 0
+  }));
+};
+
+const computeEnsembleRmse = (predictions?: Record<string, { actual: number; predicted: number }[]>) => {
+  if (!predictions) return null;
+  const modelNames = Object.keys(predictions);
+  if (modelNames.length === 0) return null;
+  const first = predictions[modelNames[0]] || [];
+  const length = first.length;
+  if (!length) return null;
+  let sumSq = 0;
+  let count = 0;
+  for (let index = 0; index < length; index += 1) {
+    const actual = first[index]?.actual;
+    if (typeof actual !== 'number') continue;
+    let sumPred = 0;
+    let used = 0;
+    for (const model of modelNames) {
+      const value = predictions[model]?.[index]?.predicted;
+      if (typeof value === 'number') {
+        sumPred += value;
+        used += 1;
+      }
+    }
+    if (!used) continue;
+    const ensemblePred = sumPred / used;
+    const diff = actual - ensemblePred;
+    sumSq += diff * diff;
+    count += 1;
+  }
+  if (!count) return null;
+  return Math.sqrt(sumSq / count);
+};
+
 const MetricBarChart = ({
   data,
   dataKey,
@@ -163,6 +212,130 @@ const buildComparisonSeries = (
       [key]: models?.[name]?.[key]
     }))
     .filter((entry) => entry[key] != null);
+
+const HistogramChart = ({
+  data,
+  label
+}: {
+  data: { bin: string; count: number }[];
+  label: string;
+}) => (
+  <ChartContainer config={{ count: { label, color: '#38bdf8' } }} className="h-56 w-full aspect-auto">
+    <BarChart data={data}>
+      <CartesianGrid strokeDasharray="3 3" />
+      <XAxis dataKey="bin" tickFormatter={(value) => String(value)} />
+      <YAxis />
+      <ChartTooltip content={<ChartTooltipContent />} />
+      <Bar dataKey="count" fill="var(--color-count)" radius={[6, 6, 0, 0]} />
+    </BarChart>
+  </ChartContainer>
+);
+
+const buildConfusionCounts = (matrix?: number[][], labels?: string[]) => {
+  if (!matrix || !Array.isArray(matrix) || !matrix.length) return [];
+  const rowSums = matrix.map((row) => row.reduce((sum, value) => sum + (Number(value) || 0), 0));
+  return (labels || rowSums.map((_, index) => `Class ${index + 1}`)).map((label, index) => ({
+    name: label,
+    color: '#38bdf8',
+    count: rowSums[index] ?? 0
+  }));
+};
+
+const computeClassMetrics = (matrix?: number[][], labels?: string[]) => {
+  if (!matrix || !Array.isArray(matrix) || !matrix.length) return [];
+  const safeDivide = (num: number, den: number) => (den > 0 ? num / den : null);
+  const colSums = matrix[0].map((_, colIndex) =>
+    matrix.reduce((sum, row) => sum + (Number(row[colIndex]) || 0), 0)
+  );
+  return matrix.map((row, rowIndex) => {
+    const tp = Number(row[rowIndex]) || 0;
+    const rowSum = row.reduce((sum, value) => sum + (Number(value) || 0), 0);
+    const colSum = colSums[rowIndex] || 0;
+    const precision = safeDivide(tp, colSum);
+    const recall = safeDivide(tp, rowSum);
+    const f1 = precision != null && recall != null && precision + recall > 0
+      ? (2 * precision * recall) / (precision + recall)
+      : null;
+    return {
+      name: labels?.[rowIndex] || `Class ${rowIndex + 1}`,
+      precision,
+      recall,
+      f1
+    };
+  });
+};
+
+const ConfusionMatrixHeatmap = ({
+  matrix,
+  labels
+}: {
+  matrix: number[][];
+  labels: string[];
+}) => {
+  const maxValue = Math.max(...matrix.flat().map((value) => Number(value) || 0), 1);
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-sm">
+        <thead>
+          <tr>
+            <th className="p-2 text-left text-xs text-muted-foreground">Actual \ Predicted</th>
+            {labels.map((label) => (
+              <th key={label} className="p-2 text-center text-xs text-muted-foreground">{label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {matrix.map((row, rowIndex) => (
+            <tr key={labels[rowIndex] || rowIndex}>
+              <td className="p-2 text-xs font-semibold text-foreground">{labels[rowIndex] || `Class ${rowIndex + 1}`}</td>
+              {row.map((value, colIndex) => {
+                const intensity = Math.min(1, (Number(value) || 0) / maxValue);
+                return (
+                  <td key={`${rowIndex}-${colIndex}`} className="p-2">
+                    <div
+                      className="rounded-md border border-border/60 text-center text-sm font-semibold text-foreground"
+                      style={{
+                        backgroundColor: `rgba(56, 189, 248, ${0.12 + intensity * 0.55})`
+                      }}
+                    >
+                      {Number(value) || 0}
+                    </div>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+const ClassificationMetricsChart = ({
+  data
+}: {
+  data: { name: string; precision: number | null; recall: number | null; f1: number | null }[];
+}) => (
+  <ChartContainer
+    config={{
+      precision: { label: 'Precision', color: '#38bdf8' },
+      recall: { label: 'Recall', color: '#f59e0b' },
+      f1: { label: 'F1', color: '#10b981' }
+    }}
+    className="h-64 w-full aspect-auto"
+  >
+    <BarChart data={data}>
+      <CartesianGrid strokeDasharray="3 3" />
+      <XAxis dataKey="name" />
+      <YAxis tickFormatter={(value) => formatDecimal(value, 3)} />
+      <ChartTooltip content={<ChartTooltipContent formatter={(value) => formatDecimal(value, 3)} />} />
+      <ChartLegend content={<ChartLegendContent />} />
+      <Bar dataKey="precision" fill="var(--color-precision)" radius={[6, 6, 0, 0]} />
+      <Bar dataKey="recall" fill="var(--color-recall)" radius={[6, 6, 0, 0]} />
+      <Bar dataKey="f1" fill="var(--color-f1)" radius={[6, 6, 0, 0]} />
+    </BarChart>
+  </ChartContainer>
+);
 
 export default function DashboardSummary() {
   const [summary, setSummary] = useState<any>(null);
@@ -215,6 +388,18 @@ export default function DashboardSummary() {
   const enabledModels = Array.isArray(metrics.enabledModels) ? metrics.enabledModels : [];
   const finalMetrics = metrics.final || null;
   const nextMetrics = metrics.next || null;
+  const report = summary?.report || {};
+  const datasetStats = report?.dataset?.stats;
+  const finalHist = buildHistogramData(report?.dataset?.final_cgpa_hist);
+  const nextHist = buildHistogramData(report?.dataset?.next_sem_cgpa_hist);
+  const finalSplit = report?.regression?.final_cgpa?.split;
+  const nextSplit = report?.regression?.next_sem_cgpa?.split;
+  const finalSplitLabel = finalSplit
+    ? `${finalSplit.train_size ?? finalSplit.train ?? '—'} / ${finalSplit.test_size ?? finalSplit.test ?? '—'}`
+    : '—';
+  const nextSplitLabel = nextSplit
+    ? `${nextSplit.train_size ?? nextSplit.train ?? '—'} / ${nextSplit.test_size ?? nextSplit.test ?? '—'}`
+    : '—';
   const modelNames = getOrderedModels(
     enabledModels.length
       ? enabledModels
@@ -230,6 +415,23 @@ export default function DashboardSummary() {
   const nextMaeData = buildComparisonSeries(nextMetrics?.models, modelNames, 'mae');
   const nextRmseData = buildComparisonSeries(nextMetrics?.models, modelNames, 'rmse');
   const nextR2Data = buildComparisonSeries(nextMetrics?.models, modelNames, 'r2');
+  const finalEnsembleRmse = computeEnsembleRmse(report?.regression?.final_cgpa?.metrics?.predictions);
+  const nextEnsembleRmse = computeEnsembleRmse(report?.regression?.next_sem_cgpa?.metrics?.predictions);
+  const finalRmseSeries = finalEnsembleRmse != null
+    ? [...finalRmseData, { name: 'Ensemble', color: '#14b8a6', rmse: finalEnsembleRmse }]
+    : finalRmseData;
+  const nextRmseSeries = nextEnsembleRmse != null
+    ? [...nextRmseData, { name: 'Ensemble', color: '#14b8a6', rmse: nextEnsembleRmse }]
+    : nextRmseData;
+  const confusionMatrix = report?.classification?.confusion_matrix || [];
+  const confusionLabels = report?.classification?.labels || [];
+  const confusionCounts = buildConfusionCounts(confusionMatrix, confusionLabels);
+  const classMetrics = computeClassMetrics(confusionMatrix, confusionLabels);
+  const overallMetricsData = [
+    { name: 'Accuracy', value: report?.classification?.accuracy ?? null, color: '#38bdf8' },
+    { name: 'Macro-F1', value: report?.classification?.f1_macro ?? null, color: '#f59e0b' },
+    { name: 'Weighted-F1', value: report?.classification?.f1_weighted ?? null, color: '#10b981' }
+  ].filter((entry) => entry.value != null);
   const finalModelRanks = finalMetrics?.models
     ? Object.entries(finalMetrics.models)
         .map(([name, values]) => ({
@@ -354,6 +556,118 @@ export default function DashboardSummary() {
                 );
               })()}
             </div>
+          </Card>
+        )}
+
+        {(datasetStats || finalHist.length > 0 || nextHist.length > 0) && (
+          <Card className="p-6 bg-card/50 backdrop-blur-sm border-border/50 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xl font-semibold text-foreground">Dataset Overview</h3>
+              <span className="text-xs text-muted-foreground">Post-rolling windows</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <Card className="p-4 bg-background/60 border-border/60">
+                <p className="text-xs text-muted-foreground">Total Students</p>
+                <p className="text-2xl font-semibold text-foreground">
+                  {datasetStats?.students_total ?? '—'}
+                </p>
+              </Card>
+              <Card className="p-4 bg-background/60 border-border/60">
+                <p className="text-xs text-muted-foreground">Training Samples</p>
+                <p className="text-2xl font-semibold text-foreground">
+                  {datasetStats?.rows_next ?? datasetStats?.rows_final ?? '—'}
+                </p>
+              </Card>
+              <Card className="p-4 bg-background/60 border-border/60">
+                <p className="text-xs text-muted-foreground">Train / Test (Final)</p>
+                <p className="text-2xl font-semibold text-foreground">
+                  {finalSplitLabel}
+                </p>
+              </Card>
+              <Card className="p-4 bg-background/60 border-border/60">
+                <p className="text-xs text-muted-foreground">Train / Test (Next)</p>
+                <p className="text-2xl font-semibold text-foreground">
+                  {nextSplitLabel}
+                </p>
+              </Card>
+            </div>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <ChartCard title="Final CGPA Histogram">
+                {finalHist.length > 0 ? (
+                  <HistogramChart data={finalHist} label="Count" />
+                ) : (
+                  <p className="text-sm text-muted-foreground">No histogram data available.</p>
+                )}
+              </ChartCard>
+              <ChartCard title="Next-Sem CGPA Histogram">
+                {nextHist.length > 0 ? (
+                  <HistogramChart data={nextHist} label="Count" />
+                ) : (
+                  <p className="text-sm text-muted-foreground">No histogram data available.</p>
+                )}
+              </ChartCard>
+            </div>
+          </Card>
+        )}
+
+        {(confusionMatrix.length > 0 && confusionLabels.length > 0) && (
+          <Card className="p-6 bg-card/50 backdrop-blur-sm border-border/50 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xl font-semibold text-foreground">Risk Classification</h3>
+              <span className="text-xs text-muted-foreground">Confusion matrix</span>
+            </div>
+            <ConfusionMatrixHeatmap matrix={confusionMatrix} labels={confusionLabels} />
+            {classMetrics.length > 0 && (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <ChartCard title="Classification Metrics">
+                  <ClassificationMetricsChart data={classMetrics} />
+                </ChartCard>
+                <Card className="p-4 bg-background/60 border-border/60">
+                  <h4 className="text-sm font-semibold text-foreground mb-3">Classification Report</h4>
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-sm">
+                      <thead>
+                        <tr>
+                          <th className="p-2 text-left text-xs text-muted-foreground">Risk Level</th>
+                          <th className="p-2 text-center text-xs text-muted-foreground">Precision</th>
+                          <th className="p-2 text-center text-xs text-muted-foreground">Recall</th>
+                          <th className="p-2 text-center text-xs text-muted-foreground">F1</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {classMetrics.map((entry) => (
+                          <tr key={entry.name} className="border-t border-border/60">
+                            <td className="p-2 font-semibold text-foreground">{entry.name}</td>
+                            <td className="p-2 text-center text-foreground">
+                              {entry.precision != null ? formatDecimal(entry.precision, 3) : '—'}
+                            </td>
+                            <td className="p-2 text-center text-foreground">
+                              {entry.recall != null ? formatDecimal(entry.recall, 3) : '—'}
+                            </td>
+                            <td className="p-2 text-center text-foreground">
+                              {entry.f1 != null ? formatDecimal(entry.f1, 3) : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {overallMetricsData.length > 0 && (
+                    <div className="mt-4">
+                      <h4 className="text-sm font-semibold text-foreground mb-2">Overall metrics</h4>
+                      <MetricBarChart data={overallMetricsData} dataKey="value" label="Score" />
+                    </div>
+                  )}
+                </Card>
+              </div>
+            )}
+            {confusionCounts.length > 0 && (
+              <div className="pt-2">
+                <ChartCard title="Class Counts">
+                  <MetricBarChart data={confusionCounts} dataKey="count" label="Count" />
+                </ChartCard>
+              </div>
+            )}
           </Card>
         )}
 
@@ -618,7 +932,7 @@ export default function DashboardSummary() {
                     )}
                     {finalRmseData.length > 0 && (
                       <ChartCard title="RMSE (lower is better)">
-                        <MetricBarChart data={finalRmseData} dataKey="rmse" label="RMSE" />
+                        <MetricBarChart data={finalRmseSeries} dataKey="rmse" label="RMSE" />
                       </ChartCard>
                     )}
                     {finalR2Data.length > 0 && (
@@ -641,7 +955,7 @@ export default function DashboardSummary() {
                     )}
                     {nextRmseData.length > 0 && (
                       <ChartCard title="RMSE (lower is better)">
-                        <MetricBarChart data={nextRmseData} dataKey="rmse" label="RMSE" />
+                        <MetricBarChart data={nextRmseSeries} dataKey="rmse" label="RMSE" />
                       </ChartCard>
                     )}
                     {nextR2Data.length > 0 && (

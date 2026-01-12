@@ -185,6 +185,20 @@ __RESULT__{"status":"ok","prediction":{...}}
 - History view
 - Retrain workflow
 
+### Model Summary Page (Dashboard)
+- Key metrics cards: Accuracy, RMSE, and R² for the latest successful run
+- Model comparison charts: MAE/RMSE/R² per model for final CGPA and next-sem CGPA
+- Ensemble RMSE bar alongside individual model RMSE
+- Dataset Overview: total students, training samples, train/test split (final + next)
+- Final CGPA and Next-Sem CGPA histograms
+- Training Configuration: grouped hyperparameters with remaining config keys surfaced
+- Risk Classification:
+  - Confusion matrix heatmap with labeled classes
+  - Classification report table (Precision/Recall/F1 per risk level)
+  - Classification comparison bar chart (Precision/Recall/F1)
+  - Overall metrics bars (Accuracy, Macro-F1, Weighted-F1)
+  - Optional class-counts bar chart
+
 ## 📡 API Endpoints
 
 ### Auth
