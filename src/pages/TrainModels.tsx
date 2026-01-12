@@ -183,8 +183,12 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
       try {
         const text = await selectedFile.text();
         const parsed = JSON.parse(text);
-        if (!Array.isArray(parsed)) {
-          setDatasetError('Dataset must be a JSON array of student records.');
+        let students: unknown = parsed;
+        if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { students?: unknown }).students)) {
+          students = (parsed as { students?: unknown }).students;
+        }
+        if (!Array.isArray(students)) {
+          setDatasetError('Dataset must be a JSON array of student records, or an object with a students array.');
           return;
         }
 
@@ -212,7 +216,7 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
         let attendanceMin = Number.POSITIVE_INFINITY;
         let attendanceMax = Number.NEGATIVE_INFINITY;
 
-        for (const student of parsed) {
+        for (const student of students) {
           const gender = typeof student?.gender === 'string' ? student.gender.trim() : null;
           if (gender) genderCounts[gender] = (genderCounts[gender] || 0) + 1;
 
@@ -271,7 +275,7 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
         }
 
         const profile: DatasetProfile = {
-          studentCount: parsed.length,
+          studentCount: students.length,
           genderCounts,
           departmentCounts,
           gradeCounts,

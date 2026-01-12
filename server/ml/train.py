@@ -45,6 +45,8 @@ BOUNDS = {
     "THREADS": (2, 8),
 }
 
+SCHEMA_VERSION = "v2_option2_nextcgpa_risk"
+
 # ------------------------- GPA helpers -------------------------
 def validate_grade_points(grade_points: dict):
     if not isinstance(grade_points, dict) or len(grade_points) < 2 or len(grade_points) > 30:
@@ -58,6 +60,8 @@ def validate_grade_points(grade_points: dict):
     return float(max(vals))
 
 def semester_gpa(sem, GP):
+    if not isinstance(sem, dict):
+        return None
     pts = []
     for k, g in sem.items():
         if k == "attendancePercentage":
@@ -69,6 +73,8 @@ def semester_gpa(sem, GP):
 def cumulative_cgpa(semesters, GP):
     tot = 0.0; cnt = 0
     for sem in semesters.values():
+        if not isinstance(sem, dict):
+            continue
         for k, g in sem.items():
             if k == "attendancePercentage":
                 continue
@@ -89,6 +95,8 @@ def build_features_for_final(student, GP):
     for s in sem_nums:
         if s <= upto:
             sem = semesters[str(s)]
+            if not isinstance(sem, dict):
+                continue
             if "attendancePercentage" in sem: att.append(sem["attendancePercentage"])
             g = semester_gpa(sem, GP)
             if g is not None: sem_gpas.append(g)
@@ -115,6 +123,8 @@ def build_features_for_next(student, GP):
     att, sem_gpas = [], []
     for s in sem_nums:
         sem = semesters[str(s)]
+        if not isinstance(sem, dict):
+            continue
         if "attendancePercentage" in sem: att.append(sem["attendancePercentage"])
         g = semester_gpa(sem, GP)
         if g is not None: sem_gpas.append(g)
@@ -147,6 +157,8 @@ def build_features_for_next_label(student, GP):
     for s in sem_nums:
         if s <= upto:
             sem = semesters[str(s)]
+            if not isinstance(sem, dict):
+                continue
             if "attendancePercentage" in sem: att.append(sem["attendancePercentage"])
             g = semester_gpa(sem, GP)
             if g is not None: sem_gpas.append(g)
@@ -277,12 +289,28 @@ def main():
     # Load data
     train_path = args.train_json
     assert os.path.exists(train_path), f"Training file not found: {train_path}"
-    data = json.load(open(train_path))
+    payload = json.load(open(train_path))
+    if isinstance(payload, dict) and "students" in payload:
+        data = payload.get("students") or []
+    else:
+        data = payload
+    if not isinstance(data, list):
+        raise ValueError("Training data must be a list of students or an object with a students list.")
+    data = [student for student in data if isinstance(student, dict)]
+    student_ids = []
+    for idx, student in enumerate(data):
+        sid = student.get("student_id")
+        if sid is None or sid == "":
+            sid = f"stu_{idx}"
+        student["student_id"] = sid
+        student_ids.append(sid)
     print(f"[INFO] org={org_id} students={len(data)} max_gpa={max_gpa}")
 
     # Build datasets
     X_final, y_final = [], []
     X_next, y_next = [], []
+    sid_final = []
+    sid_next = []
     avg_course_loads = []
     semester_gpa_sums = {}
     semester_gpa_counts = {}
@@ -290,6 +318,8 @@ def main():
     total_gpa_count = 0
 
     for student in data:
+        if not isinstance(student, dict):
+            continue
         semesters = student.get("semesters", {})
         if not isinstance(semesters, dict):
             continue
@@ -314,6 +344,7 @@ def main():
         if Xf is not None and yf is not None:
             X_final.append(Xf)
             y_final.append(yf)
+            sid_final.append(student["student_id"])
 
             avg_ch = average_credit_hours(student)
             if avg_ch is not None:
@@ -325,6 +356,7 @@ def main():
         if Xn is not None and yn is not None:
             X_next.append(Xn)
             y_next.append(yn)
+            sid_next.append(student["student_id"])
 
     semester_gpa_by_load = {
         str(k): float(semester_gpa_sums[k]/semester_gpa_counts[k])
@@ -342,7 +374,9 @@ def main():
     emit_progress(
         phase="data_ready",
         samplesFinal=len(X_final),
-        samplesNext=len(X_next)
+        samplesNext=len(X_next),
+        uniqueStudentsFinal=len(set(sid_final)),
+        uniqueStudentsNext=len(set(sid_next))
     )
 
     overall_semester_gpa = float(total_gpa_sum / total_gpa_count) if total_gpa_count else None
@@ -828,6 +862,7 @@ def main():
 
     # Metadata
     meta = {
+        "schema_version": SCHEMA_VERSION,
         "created_at": datetime.datetime.utcnow().isoformat()+"Z",
         "feature_order": feat_names,
         "grade_points": GRADE_POINTS,
@@ -854,6 +889,13 @@ def main():
             "final_cgpa_by_load": final_cgpa_by_load,
             "overall_semester_gpa": overall_semester_gpa,
             "overall_final_cgpa": overall_final_cgpa
+        },
+        "dataset_stats": {
+            "students_total": len(data),
+            "unique_students_final": len(set(sid_final)),
+            "unique_students_next": len(set(sid_next)),
+            "rows_final": len(sid_final),
+            "rows_next": len(sid_next)
         }
     }
     with open(out_dir/"metadata.json", "w") as f:
@@ -985,6 +1027,7 @@ def main():
     emit_result({
         "status": "ok",
         "modelId": args.model_id,
+        "schemaVersion": SCHEMA_VERSION,
         "bestModel": meta["best_model"],
         "rmse": float(best_metrics["rmse_te"]),
         "r2": float(best_metrics["r2_te"]),
