@@ -1,73 +1,35 @@
 import express from 'express';
-import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
-import { fileURLToPath } from 'url';
-import { PrismaClient } from '@prisma/client';
+import multer from 'multer';
 import { authenticateToken } from '../auth.js';
+import prisma from '../lib/prisma.js';
+import { STORAGE_ROOT, normalizePlotList, normalizePlotObject } from '../lib/storage.js';
+import { createOrgUploadStorage, jsonFileFilter } from '../lib/uploads.js';
 import { validateConfig } from '../utils/validate-config.js';
 import { runPythonTrain, terminateTrainingRun } from '../utils/python-runner.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
-const prisma = new PrismaClient();
-const STORAGE_ROOT = path.join(__dirname, '../../storage');
-
-function toStaticPath(absPath) {
-  if (!absPath || typeof absPath !== 'string') return absPath;
-  const normalized = path.normalize(absPath);
-  if (normalized.startsWith(STORAGE_ROOT)) {
-    const rel = normalized.slice(STORAGE_ROOT.length).replace(/\\/g, '/');
-    return `/static${rel}`;
-  }
-  return absPath;
-}
 
 function normalizePlotMap(plots) {
   if (!plots) return {};
 
   // If an array of paths, convert to keyed object based on filename
   if (Array.isArray(plots)) {
-    const entries = plots
-      .filter(Boolean)
-      .map((p) => {
-        const key = path.basename(p, path.extname(p)) || 'plot';
-        return [key, toStaticPath(p)];
-      });
-    return Object.fromEntries(entries);
+    return normalizePlotList(plots);
   }
 
   if (typeof plots === 'object') {
-    return Object.fromEntries(
-      Object.entries(plots).map(([key, value]) => [key, toStaticPath(value)])
-    );
+    return normalizePlotObject(plots);
   }
 
   return {};
 }
 
 // Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: async (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../../storage/uploads', req.orgId);
-    await fs.mkdir(uploadDir, { recursive: true });
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const timestamp = Date.now();
-    cb(null, `train_${timestamp}.json`);
-  }
-});
-
 const upload = multer({
-  storage,
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/json' || file.originalname.endsWith('.json')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only JSON files are allowed'));
-    }
-  }
+  storage: createOrgUploadStorage('uploads', 'train'),
+  fileFilter: jsonFileFilter
 });
 
 // Get model status
@@ -134,7 +96,7 @@ router.post('/train', authenticateToken, upload.single('trainFile'), async (req,
     });
 
     // Create run directory
-    const runDir = path.join(__dirname, '../../storage/models', req.orgId, modelRun.id);
+    const runDir = path.join(STORAGE_ROOT, 'models', req.orgId, modelRun.id);
     await fs.mkdir(runDir, { recursive: true });
 
     // Save config to file
@@ -162,7 +124,7 @@ router.post('/train', authenticateToken, upload.single('trainFile'), async (req,
         }
       }));
 
-      const orgModelsDir = path.join(__dirname, '../../storage/models', req.orgId);
+      const orgModelsDir = path.join(STORAGE_ROOT, 'models', req.orgId);
       try {
         const entries = await fs.readdir(orgModelsDir, { withFileTypes: true });
         await Promise.all(entries.map(async (entry) => {
@@ -239,19 +201,26 @@ router.get('/train/:runId/logs', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
-    let lastSize = 0;
+    const rawOffset = req.query.offset ?? req.headers['last-event-id'];
+    const parsedOffset = Number(rawOffset);
+    let lastSize = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? Math.floor(parsedOffset) : 0;
     let attempts = 0;
     const maxAttempts = 600; // 10 minutes
 
     const sendLogs = async () => {
       try {
         const stats = await fs.stat(logPath);
+        if (stats.size < lastSize) {
+          lastSize = 0;
+        }
         if (stats.size > lastSize) {
           const stream = await fs.readFile(logPath, 'utf-8');
           const newContent = stream.slice(lastSize);
-          lastSize = stats.size;
+          const nextOffset = stats.size;
 
+          res.write(`id: ${nextOffset}\n`);
           res.write(`data: ${JSON.stringify({ content: newContent })}\n\n`);
+          lastSize = nextOffset;
         }
 
         // Check if training is complete
@@ -260,6 +229,7 @@ router.get('/train/:runId/logs', async (req, res) => {
         });
 
         if (currentRun.status === 'SUCCEEDED' || currentRun.status === 'FAILED') {
+          res.write(`id: ${lastSize}\n`);
           res.write(`data: ${JSON.stringify({ status: currentRun.status, complete: true })}\n\n`);
           res.end();
           return;

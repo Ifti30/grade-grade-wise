@@ -88,8 +88,24 @@ function buildMetricsFromMetadata(meta) {
 export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath, outDir, prisma) {
   const logPath = path.join(outDir, 'train.log');
   const logHandle = await fs.open(logPath, 'a'); // append; create if missing
+  let mirrorLogHandle = null;
+  if (process.env.TRAIN_LOG_DIR) {
+    try {
+      await fs.mkdir(process.env.TRAIN_LOG_DIR, { recursive: true });
+      const mirrorPath = path.join(process.env.TRAIN_LOG_DIR, `${runId}.log`);
+      mirrorLogHandle = await fs.open(mirrorPath, 'a');
+    } catch (err) {
+      console.error('Failed to open mirrored training log:', err);
+    }
+  }
 
   let lastProgressHeader = null;
+  const appendLog = async (line) => {
+    await logHandle.write(line);
+    if (mirrorLogHandle) {
+      await mirrorLogHandle.write(line);
+    }
+  };
 
   function formatProgress(progress) {
     const phase = progress?.phase || 'progress';
@@ -136,7 +152,7 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
 
   // Emit an immediate log line so SSE clients don't sit on an empty file
   try {
-    await logHandle.write(`[INFO] Training started for run ${runId} at ${new Date().toISOString()}\n`);
+    await appendLog(`[INFO] Training started for run ${runId} at ${new Date().toISOString()}\n`);
   } catch (e) {
     console.error('Failed to write initial log line:', e);
   }
@@ -177,12 +193,12 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
       try {
         const header = formatProgressHeader(progress);
         if (header !== lastProgressHeader) {
-          await logHandle.write(`${header}\n`);
+          await appendLog(`${header}\n`);
           lastProgressHeader = header;
         }
         const detail = formatProgressDetail(progress);
         if (detail) {
-          await logHandle.write(`${detail}\n`);
+          await appendLog(`${detail}\n`);
         }
       } catch (err) {
         console.error('Failed to write progress to log:', err);
@@ -214,7 +230,7 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
       .filter((line) => line && !line.startsWith('__PROGRESS__') && !line.startsWith('__RESULT__'))
       .join('\n');
     if (!cleaned) return;
-    logHandle.write(cleaned + '\n').catch((err) => {
+    appendLog(cleaned + '\n').catch((err) => {
       console.error('Failed to write stdout to log:', err);
     });
   });
@@ -223,7 +239,7 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
     const text = data.toString();
     console.log('[train] stderr chunk', text.slice(0, 2000));
     stderr += text;
-    await logHandle.write(text);
+    await appendLog(text);
   });
 
   return new Promise((resolve, reject) => {
@@ -251,12 +267,15 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
           ? `Training process terminated by signal ${signal}.`
           : `Training process exited with code ${code}.`;
         try {
-          await logHandle.write(`${exitNote}\n`);
+          await appendLog(`${exitNote}\n`);
         } catch (writeErr) {
           console.error('Failed to write close error to log:', writeErr);
         }
       }
       await logHandle.close();
+      if (mirrorLogHandle) {
+        await mirrorLogHandle.close();
+      }
 
       if (resultJson && resultJson.status === 'ok') {
         const parsed = TrainingResultSchema.safeParse(resultJson);
@@ -317,11 +336,14 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
       activeTrainProcesses.delete(runId);
       terminatedTrainRuns.delete(runId);
       try {
-        await logHandle.write(`Failed to start Python process (${PYTHON_BIN}): ${error.message}\n`);
+        await appendLog(`Failed to start Python process (${PYTHON_BIN}): ${error.message}\n`);
       } catch (writeErr) {
         console.error('Failed to write spawn error to log:', writeErr);
       }
       await logHandle.close();
+      if (mirrorLogHandle) {
+        await mirrorLogHandle.close();
+      }
       try {
         await prisma.modelRun.update({
           where: { id: runId },

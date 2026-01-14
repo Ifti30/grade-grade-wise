@@ -1,52 +1,20 @@
 import express from 'express';
-import multer from 'multer';
-import path from 'path';
 import fs from 'fs/promises';
-import { fileURLToPath } from 'url';
-import { PrismaClient } from '@prisma/client';
+import multer from 'multer';
 import { authenticateToken } from '../auth.js';
+import prisma from '../lib/prisma.js';
+import { toStaticPath, normalizePlotObject } from '../lib/storage.js';
+import { createOrgUploadStorage, jsonFileFilter } from '../lib/uploads.js';
 import { runPythonPredict } from '../utils/python-runner.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
-const prisma = new PrismaClient();
-const STORAGE_ROOT = path.join(__dirname, '../../storage');
-
-function toStaticPath(absPath) {
-  if (!absPath) return null;
-
-  // Already a URL or static path
-  if (typeof absPath === 'string') {
-    if (absPath.startsWith('http://') || absPath.startsWith('https://')) return absPath;
-    if (absPath.startsWith('/static/')) return absPath;
-    if (absPath.startsWith('static/')) return `/${absPath}`;
-  }
-
-  const normalized = path.normalize(String(absPath));
-  if (normalized.startsWith(STORAGE_ROOT)) {
-    const rel = normalized.slice(STORAGE_ROOT.length).replace(/\\/g, '/');
-    return `/static${rel}`;
-  }
-
-  return null;
-}
-
-function normalizePlots(plots) {
-  if (!plots || typeof plots !== 'object') return {};
-  return Object.fromEntries(
-    Object.entries(plots).map(([key, value]) => {
-      const staticPath = typeof value === 'string' ? toStaticPath(value) : null;
-      return [key, staticPath || value];
-    })
-  );
-}
 
 function hydratePrediction(pred) {
   if (!pred) return pred;
   const inputStatic = toStaticPath(pred.inputPath);
   const outputStatic = toStaticPath(pred.outFile);
   const summary = pred.summary || {};
-  const normalizedPlots = normalizePlots(summary.plots || pred.plots);
+  const normalizedPlots = normalizePlotObject(summary.plots || pred.plots);
   const files = {
     input: summary.files?.input || inputStatic,
     output: summary.files?.output || outputStatic
@@ -68,27 +36,9 @@ function hydratePrediction(pred) {
 }
 
 // Configure multer
-const storage = multer.diskStorage({
-  destination: async (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../../storage/predictions', req.orgId);
-    await fs.mkdir(uploadDir, { recursive: true });
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const timestamp = Date.now();
-    cb(null, `student_${timestamp}.json`);
-  }
-});
-
-const upload = multer({ 
-  storage,
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/json' || file.originalname.endsWith('.json')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only JSON files are allowed'));
-    }
-  }
+const upload = multer({
+  storage: createOrgUploadStorage('predictions', 'student'),
+  fileFilter: jsonFileFilter
 });
 
 // Make prediction
@@ -142,7 +92,7 @@ router.post('/', authenticateToken, upload.single('studentFile'), async (req, re
       : {};
     const inputStaticPath = toStaticPath(req.file.path);
     const outputStaticPath = toStaticPath(outFile);
-    const predictionPlots = normalizePlots(result.plots);
+    const predictionPlots = normalizePlotObject(result.plots);
     const predictionSummary = {
       risk: result?.risk ?? null,
       current: result?.current ?? null,

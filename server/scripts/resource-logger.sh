@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-LOG_DIR="/app/storage"
+LOG_DIR="${RESOURCE_LOG_DIR:-/app/storage}"
 MEM_LOG="${LOG_DIR}/memory.log"
 PS_LOG="${LOG_DIR}/ps.log"
 INTERVAL="${RESOURCE_LOG_INTERVAL:-5}"

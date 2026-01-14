@@ -1,17 +1,15 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import cookieParser from 'cookie-parser';
 
 import authRoutes from './routes/auth.js';
 import modelRoutes from './routes/models.js';
 import predictRoutes from './routes/predict.js';
+import { STORAGE_ROOT } from './lib/storage.js';
 
 dotenv.config();
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -21,8 +19,7 @@ app.use(cookieParser());
 app.use(express.json());
 
 // Static files - serve storage directory
-const storagePath = path.join(__dirname, '../storage');
-app.use('/static', express.static(storagePath));
+app.use('/static', express.static(STORAGE_ROOT));
 
 // Routes
 app.use('/api/auth', authRoutes);

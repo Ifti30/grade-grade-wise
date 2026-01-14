@@ -2,11 +2,10 @@ import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { PrismaClient } from '@prisma/client';
 import { authenticateToken } from '../auth.js';
+import prisma from '../lib/prisma.js';
 
 const router = express.Router();
-const prisma = new PrismaClient();
 const ACCESS_TOKEN_TTL = '7d';
 const REFRESH_TOKEN_DAYS = 30;
 

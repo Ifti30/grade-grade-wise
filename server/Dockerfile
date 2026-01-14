@@ -24,9 +24,14 @@ COPY . .
 # Ensure startup script is executable
 RUN chmod +x /app/scripts/resource-logger.sh
 
+# Dedicated log directories for debugging
+RUN mkdir -p /app/logs/resource /app/logs/training
+
 # Expose the API port
 EXPOSE 3000
 
 # Start the server in production mode (no file-watching)
 ENV NODE_ENV=production
+ENV RESOURCE_LOG_DIR=/app/logs/resource
+ENV TRAIN_LOG_DIR=/app/logs/training
 CMD ["sh", "-c", "/app/scripts/resource-logger.sh & npm run start"]
