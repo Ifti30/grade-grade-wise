@@ -35,6 +35,9 @@ const DEFAULT_CONFIG: any = {
   SVR_TUNE: true,
   SVR_C: 10,
   SVR_EPSILON: 0.1,
+  SVR_C_GRID: [0.1, 1, 10, 30, 100, 300, 1000],
+  SVR_EPSILON_GRID: [0.001, 0.01, 0.05, 0.1, 0.2],
+  SVR_GAMMA_GRID: ['scale', 'auto', 0.01, 0.1, 1],
   GRADE_POINTS: {
     "A+": 4.0, "A": 3.75, "A-": 3.5, "B+": 3.25, "B": 3.0,
     "B-": 2.75, "C+": 2.5, "C": 2.25, "D": 2.0, "F": 0.0
@@ -103,6 +106,9 @@ const HYPERPARAMETER_GROUPS = [
       { key: 'SVR_TUNE', label: 'Tune SVR (balanced metrics)', type: 'select' },
       { key: 'SVR_C', label: 'Regularization (C)', step: '0.1', min: 0.1, max: 100, type: 'number' },
       { key: 'SVR_EPSILON', label: 'Epsilon', step: '0.01', min: 0.001, max: 1, type: 'number' }
+    ],
+    note: [
+      'Tuning grid can be customized in the JSON config if needed.'
     ]
   },
   {

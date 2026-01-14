@@ -680,9 +680,9 @@ def main():
     SVR_TUNE    = parse_bool("SVR_TUNE", False)
     SVR_C       = float(clamp("SVR_C", 10.0))
     SVR_EPSILON = float(clamp("SVR_EPSILON", 0.1))
-    SVR_C_GRID = parse_num_list(cfg.get("SVR_C_GRID"), [0.1, 1.0, 10.0, 30.0])
-    SVR_EPSILON_GRID = parse_num_list(cfg.get("SVR_EPSILON_GRID"), [0.01, 0.05, 0.1, 0.2])
-    SVR_GAMMA_GRID = cfg.get("SVR_GAMMA_GRID", ["scale", "auto"])
+    SVR_C_GRID = parse_num_list(cfg.get("SVR_C_GRID"), [0.1, 1.0, 10.0, 30.0, 100.0, 300.0, 1000.0])
+    SVR_EPSILON_GRID = parse_num_list(cfg.get("SVR_EPSILON_GRID"), [0.001, 0.01, 0.05, 0.1, 0.2])
+    SVR_GAMMA_GRID = cfg.get("SVR_GAMMA_GRID", ["scale", "auto", 0.01, 0.1, 1.0])
     RISK_HIGH_MAX = float(cfg.get("RISK_HIGH_MAX", 3.30))
     RISK_MED_MAX  = float(cfg.get("RISK_MED_MAX", 3.50))
     GRADE_POINTS = cfg.get("GRADE_POINTS", {
