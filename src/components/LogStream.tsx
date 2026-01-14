@@ -15,6 +15,8 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
   const [logs, setLogs] = useState<string>('');
   const [status, setStatus] = useState<'connecting' | 'streaming' | 'complete' | 'error'>('connecting');
   const [streamToken, setStreamToken] = useState(token);
+  const [summaryReady, setSummaryReady] = useState(false);
+  const [summaryProgress, setSummaryProgress] = useState(0);
   const scrollRef = useRef<HTMLPreElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const lastEventIdRef = useRef(0);
@@ -83,21 +85,52 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
   const renderLogs = () => {
     const lines = logs.split('\n');
     const nodes: React.ReactNode[] = [];
+    let epochBuffer: string[] = [];
+    const epochChunkSize = 4;
+
+    const flushEpochBuffer = () => {
+      if (!epochBuffer.length) return;
+      const chunks: string[][] = [];
+      for (let i = 0; i < epochBuffer.length; i += epochChunkSize) {
+        chunks.push(epochBuffer.slice(i, i + epochChunkSize));
+      }
+      chunks.forEach((chunk) => {
+        nodes.push(
+          <div key={`epoch-${nodes.length}`} className="flex flex-wrap text-foreground/90">
+            {chunk.map((entry, entryIndex) => (
+              <span
+                key={`${entry}-${entryIndex}`}
+                className={entryIndex === 0 ? '' : 'ml-2 pl-2 border-l-2 border-sky-500/70'}
+              >
+                {entry}
+              </span>
+            ))}
+          </div>
+        );
+      });
+      epochBuffer = [];
+    };
 
     lines.forEach((line, index) => {
       const trimmedEnd = line.trimEnd();
       const trimmedStart = trimmedEnd.trimStart();
       if (!trimmedStart) {
+        flushEpochBuffer();
         nodes.push(<div key={`spacer-${index}`} className="h-2" />);
         return;
       }
 
       if (trimmedStart.startsWith('epoch=') || trimmedStart.startsWith('valLoss=')) {
+        epochBuffer.push(trimmedStart);
         return;
       }
 
+      flushEpochBuffer();
+
       nodes.push(renderLine(trimmedStart, index));
     });
+
+    flushEpochBuffer();
 
     return nodes;
   };
@@ -192,6 +225,55 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
     }
   }, [logs]);
 
+  useEffect(() => {
+    if (status !== 'complete' || !runId) {
+      setSummaryReady(false);
+      setSummaryProgress(0);
+      return;
+    }
+
+    let cancelled = false;
+    const key = `summaryReady:${runId}`;
+    const authToken = localStorage.getItem('token') || token;
+    const url = `${api.getModelSummaryStreamUrl(runId)}&token=${encodeURIComponent(authToken)}`;
+    const source = new EventSource(url);
+    let totalChunks = 0;
+
+    source.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'start') {
+          totalChunks = Number(data.totalChunks) || 0;
+          setSummaryProgress(0);
+        }
+        if (data.type === 'complete') {
+          setSummaryProgress(1);
+          localStorage.setItem(key, 'true');
+          setSummaryReady(true);
+          source.close();
+          return;
+        }
+        if (totalChunks > 0 && Number.isFinite(data.index)) {
+          const progress = Math.min(1, Math.max(0, data.index / totalChunks));
+          setSummaryProgress(progress);
+        }
+      } catch (error) {
+        console.error('Failed to parse summary stream:', error);
+      }
+    };
+
+    source.onerror = () => {
+      if (!cancelled) {
+        source.close();
+      }
+    };
+
+    return () => {
+      cancelled = true;
+      source.close();
+    };
+  }, [status, runId, token]);
+
   return (
     <Card className="bg-background/95 backdrop-blur-sm border-border/50 overflow-hidden">
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border/50 bg-muted/30">
@@ -209,6 +291,17 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
       {status === 'error' && (
         <div className="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
           Log stream disconnected. Verify the SSE endpoint and auth token.
+        </div>
+      )}
+      {status === 'complete' && !summaryReady && (
+        <div className="border-b border-border/40 bg-muted/30 px-4 py-2">
+          <div className="text-xs text-muted-foreground mb-2">Preparing charts…</div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-muted/50">
+            <div
+              className="h-full animate-pulse rounded-full bg-primary/70 transition-all"
+              style={{ width: `${Math.max(10, Math.round(summaryProgress * 100))}%` }}
+            />
+          </div>
         </div>
       )}
       <div className="border-b border-border/40 px-4 py-2 text-[11px] text-muted-foreground">

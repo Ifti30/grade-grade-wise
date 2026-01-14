@@ -154,6 +154,12 @@ class ApiClient {
     return this.fetch('/models/summary');
   }
 
+  getModelSummaryStreamUrl(runId?: string) {
+    const base = `${API_URL}/models/summary/stream`;
+    if (!runId) return base;
+    return `${base}?runId=${encodeURIComponent(runId)}`;
+  }
+
   // Predictions
   async predict(studentFile: File, creditHours?: number | null) {
     const formData = new FormData();

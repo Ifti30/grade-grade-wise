@@ -11,6 +11,20 @@ import { runPythonTrain, terminateTrainingRun } from '../utils/python-runner.js'
 import { readLogChunk } from '../utils/log-stream.js';
 
 const router = express.Router();
+const SUMMARY_CHUNK_SIZE = 200;
+
+const chunkArray = (items, size) => {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+};
+
+const writeSse = (res, payload) => {
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+};
 
 function normalizePlotMap(plots) {
   if (!plots) return {};
@@ -352,6 +366,222 @@ router.get('/summary', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Summary error:', error);
     res.status(500).json({ error: 'Failed to get summary' });
+  }
+});
+
+// Stream training summary (SSE)
+router.get('/summary/stream', async (req, res) => {
+  try {
+    const token = req.query.token;
+    const requestedRunId = req.query.runId;
+
+    if (!token) {
+      return res.status(401).json({ error: 'Access token required' });
+    }
+
+    // Verify token manually (EventSource doesn't support headers)
+    let decoded;
+    try {
+      const jwt = await import('jsonwebtoken');
+      decoded = jwt.default.verify(token, process.env.JWT_SECRET);
+    } catch (error) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+
+    // Fetch user to verify orgId
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId }
+    });
+
+    if (!user) {
+      return res.status(403).json({ error: 'User not found' });
+    }
+
+    const runLookup = requestedRunId
+      ? { id: String(requestedRunId), orgId: user.orgId }
+      : { orgId: user.orgId, status: 'SUCCEEDED' };
+
+    const lastSucceeded = await prisma.modelRun.findFirst({
+      where: runLookup,
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    if (!lastSucceeded) {
+      writeSse(res, { type: 'complete', totalChunks: 0, index: 0, hasModel: false });
+      res.end();
+      return;
+    }
+
+    const metrics = (() => {
+      const m = lastSucceeded.metrics;
+      if (!m) return {};
+      if (!Array.isArray(m) && typeof m === 'object') return m;
+      if (Array.isArray(m)) {
+        const pick = [...m].sort((a, b) => {
+          const ra = Number(a.RMSE ?? a.rmse ?? Infinity);
+          const rb = Number(b.RMSE ?? b.rmse ?? Infinity);
+          return ra - rb;
+        })[0] || m[0];
+        return {
+          rmse: Number(pick?.RMSE ?? pick?.rmse ?? 0),
+          mae: Number(pick?.MAE ?? pick?.mae ?? 0),
+          r2: Number(pick?.R2 ?? pick?.r2 ?? 0) || null,
+          accuracy: Number(pick?.accuracy ?? pick?.Accuracy ?? 0) || null
+        };
+      }
+      return {};
+    })();
+
+    const plots = normalizePlotMap(lastSucceeded.plots);
+    let report = null;
+    try {
+      const reportPath = path.join(lastSucceeded.artifactsDir, 'report.json');
+      const raw = await fs.readFile(reportPath, 'utf-8');
+      report = JSON.parse(raw);
+    } catch {
+      report = null;
+    }
+
+    const chunks = [];
+    chunks.push({ type: 'meta', payload: {
+      hasModel: true,
+      createdAt: lastSucceeded.createdAt,
+      artifactsDir: lastSucceeded.artifactsDir
+    }});
+    chunks.push({ type: 'metrics', payload: metrics });
+    chunks.push({ type: 'plots', payload: plots });
+    chunks.push({ type: 'config', payload: lastSucceeded.config || {} });
+
+    if (report && typeof report === 'object') {
+      chunks.push({ type: 'report', path: 'schema', payload: {
+        schema_version: report.schema_version,
+        created_at: report.created_at,
+        splitting: report.splitting
+      }});
+
+      const dataset = report.dataset || {};
+      chunks.push({ type: 'report', path: 'dataset.stats', payload: dataset.stats || {} });
+      for (const [key, values] of Object.entries({
+        final_cgpa_hist: dataset.final_cgpa_hist,
+        next_sem_cgpa_hist: dataset.next_sem_cgpa_hist
+      })) {
+        const parts = chunkArray(values, SUMMARY_CHUNK_SIZE);
+        parts.forEach((part, idx) => {
+          chunks.push({
+            type: 'report',
+            path: `dataset.${key}`,
+            index: idx,
+            total: parts.length,
+            payload: part
+          });
+        });
+      }
+
+      const regression = report.regression || {};
+      for (const [taskKey, task] of Object.entries(regression)) {
+        if (!task || typeof task !== 'object') continue;
+        if (task.bestModel) {
+          chunks.push({ type: 'report', path: `regression.${taskKey}.bestModel`, payload: task.bestModel });
+        }
+        const metricsBlock = task.metrics || {};
+        if (metricsBlock.models) {
+          chunks.push({ type: 'report', path: `regression.${taskKey}.metrics.models`, payload: metricsBlock.models });
+        }
+        if (metricsBlock.testSize != null) {
+          chunks.push({ type: 'report', path: `regression.${taskKey}.metrics.testSize`, payload: metricsBlock.testSize });
+        }
+        const predictions = metricsBlock.predictions || {};
+        for (const [modelName, values] of Object.entries(predictions)) {
+          const parts = chunkArray(values, SUMMARY_CHUNK_SIZE);
+          parts.forEach((part, idx) => {
+            chunks.push({
+              type: 'report',
+              path: `regression.${taskKey}.metrics.predictions.${modelName}`,
+              index: idx,
+              total: parts.length,
+              payload: part
+            });
+          });
+        }
+        const featureImportance = metricsBlock.featureImportance || {};
+        for (const [modelName, values] of Object.entries(featureImportance)) {
+          const parts = chunkArray(values, SUMMARY_CHUNK_SIZE);
+          parts.forEach((part, idx) => {
+            chunks.push({
+              type: 'report',
+              path: `regression.${taskKey}.metrics.featureImportance.${modelName}`,
+              index: idx,
+              total: parts.length,
+              payload: part
+            });
+          });
+        }
+        const learningCurves = metricsBlock.learningCurves || {};
+        for (const [modelName, curves] of Object.entries(learningCurves)) {
+          if (!curves || typeof curves !== 'object') continue;
+          for (const [curveKey, values] of Object.entries(curves)) {
+            const parts = chunkArray(values, SUMMARY_CHUNK_SIZE);
+            parts.forEach((part, idx) => {
+              chunks.push({
+                type: 'report',
+                path: `regression.${taskKey}.metrics.learningCurves.${modelName}.${curveKey}`,
+                index: idx,
+                total: parts.length,
+                payload: part
+              });
+            });
+          }
+        }
+        if (task.residualSamples) {
+          const parts = chunkArray(task.residualSamples, SUMMARY_CHUNK_SIZE);
+          parts.forEach((part, idx) => {
+            chunks.push({
+              type: 'report',
+              path: `regression.${taskKey}.residualSamples`,
+              index: idx,
+              total: parts.length,
+              payload: part
+            });
+          });
+        }
+        if (task.split) {
+          chunks.push({ type: 'report', path: `regression.${taskKey}.split`, payload: task.split });
+        }
+      }
+
+      const classification = report.classification || {};
+      chunks.push({ type: 'report', path: 'classification.summary', payload: {
+        risk_target: classification.risk_target,
+        thresholds: classification.thresholds,
+        labels: classification.labels,
+        accuracy: classification.accuracy,
+        precision_macro: classification.precision_macro,
+        recall_macro: classification.recall_macro,
+        f1_macro: classification.f1_macro,
+        precision_weighted: classification.precision_weighted,
+        recall_weighted: classification.recall_weighted,
+        f1_weighted: classification.f1_weighted
+      }});
+      if (classification.confusion_matrix) {
+        chunks.push({ type: 'report', path: 'classification.confusion_matrix', payload: classification.confusion_matrix });
+      }
+    }
+
+    writeSse(res, { type: 'start', totalChunks: chunks.length, index: 0 });
+    chunks.forEach((chunk, idx) => {
+      writeSse(res, { ...chunk, index: idx + 1, totalChunks: chunks.length });
+    });
+    writeSse(res, { type: 'complete', totalChunks: chunks.length, index: chunks.length });
+    res.end();
+  } catch (error) {
+    console.error('Summary stream error:', error);
+    res.status(500).json({ error: 'Failed to stream summary' });
   }
 });
 

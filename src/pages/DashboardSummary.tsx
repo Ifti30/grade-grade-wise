@@ -345,6 +345,10 @@ export default function DashboardSummary() {
     try {
       const data = await api.getModelSummary();
       setSummary(data);
+      const runId = data?.artifactsDir?.split('/').pop();
+      if (runId) {
+        localStorage.setItem(`summaryReady:${runId}`, 'true');
+      }
     } catch (error: any) {
       toast.error('Failed to load summary');
     } finally {

@@ -105,7 +105,14 @@ export default function TrainingComplete() {
   useEffect(() => { loadSummary(); }, []);
 
   const loadSummary = async () => {
-    try { const data = await api.getModelSummary(); setSummary(data); }
+    try {
+      const data = await api.getModelSummary();
+      setSummary(data);
+      const runId = data?.artifactsDir?.split('/').pop();
+      if (runId) {
+        localStorage.setItem(`summaryReady:${runId}`, 'true');
+      }
+    }
     catch { toast.error('Failed to load training summary'); }
     finally { setLoading(false); }
   };
