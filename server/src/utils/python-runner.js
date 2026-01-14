@@ -92,6 +92,26 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
   if (process.env.TRAIN_LOG_DIR) {
     try {
       await fs.mkdir(process.env.TRAIN_LOG_DIR, { recursive: true });
+      try {
+        const entries = await fs.readdir(process.env.TRAIN_LOG_DIR);
+        const logFiles = entries.filter((name) => name.endsWith('.log'));
+        if (logFiles.length > 5) {
+          const stats = await Promise.all(
+            logFiles.map(async (name) => ({
+              name,
+              stat: await fs.stat(path.join(process.env.TRAIN_LOG_DIR, name))
+            }))
+          );
+          stats
+            .sort((a, b) => a.stat.mtimeMs - b.stat.mtimeMs)
+            .slice(0, Math.max(0, stats.length - 5))
+            .forEach((entry) => {
+              fs.unlink(path.join(process.env.TRAIN_LOG_DIR, entry.name)).catch(() => {});
+            });
+        }
+      } catch (err) {
+        console.error('Failed to prune training logs:', err);
+      }
       const mirrorPath = path.join(process.env.TRAIN_LOG_DIR, `${runId}.log`);
       mirrorLogHandle = await fs.open(mirrorPath, 'a');
     } catch (err) {

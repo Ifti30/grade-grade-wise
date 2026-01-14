@@ -17,6 +17,7 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
   const [streamToken, setStreamToken] = useState(token);
   const scrollRef = useRef<HTMLPreElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const lastEventIdRef = useRef(0);
 
   const renderLine = (display: string, index: number) => {
     if (!display) {
@@ -109,9 +110,13 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
     let cancelled = false;
     let eventSource: EventSource | null = null;
     let didRetry = false;
+    lastEventIdRef.current = 0;
+    setLogs('');
 
     const openStream = (authToken: string) => {
-      eventSource = new EventSource(`${url}?token=${encodeURIComponent(authToken)}`);
+      const offset = lastEventIdRef.current;
+      const query = `token=${encodeURIComponent(authToken)}${offset > 0 ? `&offset=${offset}` : ''}`;
+      eventSource = new EventSource(`${url}?${query}`);
 
       eventSource.onopen = () => {
         setStatus('streaming');
@@ -120,6 +125,12 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
       eventSource.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          if (event.lastEventId) {
+            const parsed = Number(event.lastEventId);
+            if (Number.isFinite(parsed) && parsed >= 0) {
+              lastEventIdRef.current = Math.floor(parsed);
+            }
+          }
 
           if (data.content) {
             setLogs((prev) => prev + data.content);

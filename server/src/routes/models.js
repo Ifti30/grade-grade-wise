@@ -8,6 +8,7 @@ import { STORAGE_ROOT, normalizePlotList, normalizePlotObject } from '../lib/sto
 import { createOrgUploadStorage, jsonFileFilter } from '../lib/uploads.js';
 import { validateConfig } from '../utils/validate-config.js';
 import { runPythonTrain, terminateTrainingRun } from '../utils/python-runner.js';
+import { readLogChunk } from '../utils/log-stream.js';
 
 const router = express.Router();
 
@@ -209,17 +210,10 @@ router.get('/train/:runId/logs', async (req, res) => {
 
     const sendLogs = async () => {
       try {
-        const stats = await fs.stat(logPath);
-        if (stats.size < lastSize) {
-          lastSize = 0;
-        }
-        if (stats.size > lastSize) {
-          const stream = await fs.readFile(logPath, 'utf-8');
-          const newContent = stream.slice(lastSize);
-          const nextOffset = stats.size;
-
+        const { chunk, nextOffset } = await readLogChunk(logPath, lastSize);
+        if (chunk) {
           res.write(`id: ${nextOffset}\n`);
-          res.write(`data: ${JSON.stringify({ content: newContent })}\n\n`);
+          res.write(`data: ${JSON.stringify({ content: chunk })}\n\n`);
           lastSize = nextOffset;
         }
 

@@ -67,6 +67,14 @@ Backend runs on http://localhost:3000
 
 **Important**: Update `PYTHON_BIN` in `server/.env` if your Python path is different (e.g., `/opt/homebrew/bin/python3` on M1 Macs).
 
+### Logging (Docker)
+
+If you run the API via Docker, training logs are written under `server/storage/models/**/train.log`. Resource and mirrored training logs can also be persisted by mounting `server/logs` to `/app/logs` (see `server/docker-compose.yml`), which writes:
+
+- `server/logs/resource/memory.log`
+- `server/logs/resource/ps.log`
+- `server/logs/training/<runId>.log`
+
 ### 3. Frontend Setup
 
 In a new terminal:

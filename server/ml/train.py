@@ -281,7 +281,6 @@ def merge_students(existing, incoming, stats):
                 existing_sems[sem_key] = sem_value
         merged["semesters"] = existing_sems
     return merged
-    return merged
 
 # ------------------------- GPA helpers -------------------------
 # Compute semester/CGPA values in a resilient way (skip invalid/missing data).

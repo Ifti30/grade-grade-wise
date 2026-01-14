@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { ChartCard } from '@/components/ChartCard';
 import { CheckCircle, BarChart3, TrendingUp, Target } from 'lucide-react';
 import { toast } from 'sonner';
 import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartLegendContent } from '@/components/ui/chart';
@@ -69,13 +70,6 @@ const buildHistogramData = (hist?: { binStart: number; binEnd: number; count: nu
     count: bin.count
   }));
 };
-
-const ChartCard = ({ title, children }: { title: string; children: React.ReactNode }) => (
-  <Card className="p-4 bg-card/40 border-border/50 space-y-3">
-    <h5 className="text-sm font-semibold text-foreground">{title}</h5>
-    {children}
-  </Card>
-);
 
 const MetricBarChart = ({ data, dataKey, label }: { data: any[]; dataKey: string; label: string }) => (
   <ChartContainer config={{ [dataKey]: { label } }} className="h-56 w-full">

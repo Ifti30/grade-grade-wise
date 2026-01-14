@@ -22,10 +22,13 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       PYTHON_BIN: python3
       PORT: 3000
+      RESOURCE_LOG_DIR: /app/logs/resource
+      TRAIN_LOG_DIR: /app/logs/training
     depends_on:
       - db
     volumes:
       - ./storage:/app/storage # persist uploads/models/predictions
+      - ./logs:/app/logs # persist resource/training logs
     ports:
       - "3000:3000"
 volumes:

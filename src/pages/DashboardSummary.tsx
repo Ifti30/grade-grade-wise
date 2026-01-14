@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { Layout } from '@/components/Layout';
 import { Card } from '@/components/ui/card';
+import { ChartCard } from '@/components/ChartCard';
 import { Button } from '@/components/ui/button';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart';
@@ -104,13 +105,6 @@ const getScatterDomain = (points: { actual: number; predicted: number }[]) => {
   }
   return { min, max };
 };
-
-const ChartCard = ({ title, children }: { title: string; children: React.ReactNode }) => (
-  <Card className="p-4 bg-card/40 border-border/50 space-y-3">
-    <h5 className="text-sm font-semibold text-foreground">{title}</h5>
-    {children}
-  </Card>
-);
 
 const buildCurveData = (curve?: { train?: number[]; valid?: number[] }) => {
   if (!curve) return [];
@@ -662,10 +656,12 @@ export default function DashboardSummary() {
               </div>
             )}
             {confusionCounts.length > 0 && (
-              <div className="pt-2">
-                <ChartCard title="Class Counts">
-                  <MetricBarChart data={confusionCounts} dataKey="count" label="Count" />
-                </ChartCard>
+              <div className="pt-2 flex justify-center">
+                <div className="w-full max-w-md">
+                  <ChartCard title="Class Counts">
+                    <MetricBarChart data={confusionCounts} dataKey="count" label="Count" />
+                  </ChartCard>
+                </div>
               </div>
             )}
           </Card>
