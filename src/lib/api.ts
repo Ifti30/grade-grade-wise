@@ -175,6 +175,10 @@ class ApiClient {
   async getPrediction(id: string) {
     return this.fetch(`/predict/${id}`);
   }
+
+  async clearPredictions() {
+    return this.fetch('/predict', { method: 'DELETE' });
+  }
 }
 
 export const api = new ApiClient();

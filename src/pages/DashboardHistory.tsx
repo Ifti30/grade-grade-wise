@@ -3,7 +3,7 @@ import { api } from '@/lib/api';
 import { Layout } from '@/components/Layout';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Loader2, Eye, History } from 'lucide-react';
+import { Loader2, Eye, History, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import PredictionDetails from '@/components/predictions/PredictionDetails';
 
@@ -11,6 +11,7 @@ export default function DashboardHistory() {
   const [predictions, setPredictions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedPrediction, setSelectedPrediction] = useState<any>(null);
+  const [clearing, setClearing] = useState(false);
 
   useEffect(() => {
     loadPredictions();
@@ -33,6 +34,22 @@ export default function DashboardHistory() {
       setSelectedPrediction(data);
     } catch (error: any) {
       toast.error('Failed to load prediction details');
+    }
+  };
+
+  const handleClearHistory = async () => {
+    if (!window.confirm('Clear all prediction history for this organization?')) {
+      return;
+    }
+    setClearing(true);
+    try {
+      await api.clearPredictions();
+      setPredictions([]);
+      toast.success('Prediction history cleared');
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to clear prediction history');
+    } finally {
+      setClearing(false);
     }
   };
 
@@ -68,9 +85,23 @@ export default function DashboardHistory() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div>
-          <h2 className="text-3xl font-bold text-foreground mb-2">Prediction History</h2>
-          <p className="text-muted-foreground">View all past predictions</p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-3xl font-bold text-foreground mb-2">Prediction History</h2>
+            <p className="text-muted-foreground">View all past predictions</p>
+          </div>
+          {predictions.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleClearHistory}
+              disabled={clearing}
+              className="gap-2"
+            >
+              <Trash2 className="h-4 w-4" />
+              {clearing ? 'Clearing...' : 'Clear history'}
+            </Button>
+          )}
         </div>
 
         {predictions.length === 0 ? (

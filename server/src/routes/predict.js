@@ -1,9 +1,10 @@
 import express from 'express';
 import fs from 'fs/promises';
+import path from 'path';
 import multer from 'multer';
 import { authenticateToken } from '../auth.js';
 import prisma from '../lib/prisma.js';
-import { toStaticPath, normalizePlotObject } from '../lib/storage.js';
+import { STORAGE_ROOT, toStaticPath, normalizePlotObject } from '../lib/storage.js';
 import { createOrgUploadStorage, jsonFileFilter } from '../lib/uploads.js';
 import { runPythonPredict } from '../utils/python-runner.js';
 
@@ -162,6 +163,29 @@ router.get('/:id', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Get prediction error:', error);
     res.status(500).json({ error: 'Failed to get prediction' });
+  }
+});
+
+// Clear prediction history for org
+router.delete('/', authenticateToken, async (req, res) => {
+  try {
+    const result = await prisma.prediction.deleteMany({
+      where: { orgId: req.orgId }
+    });
+
+    const orgPredictionsDir = path.join(STORAGE_ROOT, 'predictions', req.orgId);
+    try {
+      await fs.rm(orgPredictionsDir, { recursive: true, force: true });
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.error('Failed to delete prediction files:', error);
+      }
+    }
+
+    res.json({ deleted: result.count });
+  } catch (error) {
+    console.error('Clear predictions error:', error);
+    res.status(500).json({ error: 'Failed to clear prediction history' });
   }
 });
 

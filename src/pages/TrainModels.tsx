@@ -32,10 +32,9 @@ const DEFAULT_CONFIG: any = {
   MLP_EPOCHS: 300,
   MLP_PATIENCE: 40,
   SVR_ENABLE: true,
+  SVR_TUNE: true,
   SVR_C: 10,
   SVR_EPSILON: 0.1,
-  RISK_HIGH_MAX: 3.30,
-  RISK_MED_MAX: 3.50,
   GRADE_POINTS: {
     "A+": 4.0, "A": 3.75, "A-": 3.5, "B+": 3.25, "B": 3.0,
     "B-": 2.75, "C+": 2.5, "C": 2.25, "D": 2.0, "F": 0.0
@@ -101,16 +100,19 @@ const HYPERPARAMETER_GROUPS = [
     enabledKey: 'SVR_ENABLE',
     fields: [
       { key: 'SVR_ENABLE', label: 'Enabled', type: 'select' },
+      { key: 'SVR_TUNE', label: 'Tune SVR (balanced metrics)', type: 'select' },
       { key: 'SVR_C', label: 'Regularization (C)', step: '0.1', min: 0.1, max: 100, type: 'number' },
       { key: 'SVR_EPSILON', label: 'Epsilon', step: '0.01', min: 0.001, max: 1, type: 'number' }
     ]
   },
   {
     title: 'Risk Thresholds',
-    description: 'Defines GPA cutoffs for risk buckets.',
-    fields: [
-      { key: 'RISK_HIGH_MAX', label: 'High Risk Max GPA', step: '0.01', type: 'number' },
-      { key: 'RISK_MED_MAX', label: 'Medium Risk Max GPA', step: '0.01', type: 'number' }
+    description: 'Thresholds are derived automatically from the training data.',
+    fields: [],
+    note: [
+      'High risk: <= 30th percentile of next-semester CGPA (training split).',
+      'Medium risk: <= 70th percentile of next-semester CGPA (training split).',
+      'Low risk: > 70th percentile of next-semester CGPA (training split).'
     ]
   }
 ] as const;
@@ -206,6 +208,15 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
           setRunId(lastRun.id);
           setTraining(true);
           localStorage.setItem(ACTIVE_TRAIN_RUN_KEY, lastRun.id);
+        } else if (lastRun && (lastRun.status === 'SUCCEEDED' || lastRun.status === 'FAILED')) {
+          const savedRunId = localStorage.getItem(ACTIVE_TRAIN_RUN_KEY);
+          if (savedRunId && savedRunId === lastRun.id) {
+            setRunId(lastRun.id);
+            setTraining(true);
+            setTrainingStatus(lastRun.status);
+          } else {
+            clearActiveRun();
+          }
         } else {
           clearActiveRun();
         }
@@ -229,6 +240,14 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
         const lastRun = status?.lastRun;
         const isRunning = lastRun && (lastRun.status === 'RUNNING' || lastRun.status === 'PENDING');
         if (!isRunning) {
+          if (lastRun && (lastRun.status === 'SUCCEEDED' || lastRun.status === 'FAILED')) {
+            if (runId && lastRun.id === runId) {
+              if (!trainingStatus) {
+                setTrainingStatus(lastRun.status);
+              }
+              return;
+            }
+          }
           clearActiveRun();
         }
       } catch (error) {
@@ -561,6 +580,13 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
                   );
                 })}
               </div>
+              {'note' in group && Array.isArray(group.note) && group.note.length > 0 && (
+                <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground space-y-1">
+                  {group.note.map((line) => (
+                    <p key={line}>{line}</p>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>

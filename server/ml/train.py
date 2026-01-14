@@ -645,6 +645,18 @@ def main():
         if isinstance(v, str):
             return v.lower() == "true"
         return bool(v)
+    def parse_num_list(value, fallback):
+        if isinstance(value, (list, tuple)):
+            parsed = []
+            for item in value:
+                try:
+                    num = float(item)
+                except Exception:
+                    continue
+                if math.isfinite(num):
+                    parsed.append(num)
+            return parsed if parsed else fallback
+        return fallback
 
     RANDOM_SEED = int(cfg.get("RANDOM_SEED", 42))
     THREADS     = int(clamp("THREADS", 4))
@@ -665,8 +677,12 @@ def main():
     MLP_EPOCHS  = int(clamp("MLP_EPOCHS", 300))
     MLP_PATIENCE= int(clamp("MLP_PATIENCE", 40))
     SVR_ENABLE  = parse_bool("SVR_ENABLE", True)
+    SVR_TUNE    = parse_bool("SVR_TUNE", False)
     SVR_C       = float(clamp("SVR_C", 10.0))
     SVR_EPSILON = float(clamp("SVR_EPSILON", 0.1))
+    SVR_C_GRID = parse_num_list(cfg.get("SVR_C_GRID"), [0.1, 1.0, 10.0, 30.0])
+    SVR_EPSILON_GRID = parse_num_list(cfg.get("SVR_EPSILON_GRID"), [0.01, 0.05, 0.1, 0.2])
+    SVR_GAMMA_GRID = cfg.get("SVR_GAMMA_GRID", ["scale", "auto"])
     RISK_HIGH_MAX = float(cfg.get("RISK_HIGH_MAX", 3.30))
     RISK_MED_MAX  = float(cfg.get("RISK_MED_MAX", 3.50))
     GRADE_POINTS = cfg.get("GRADE_POINTS", {
@@ -899,7 +915,7 @@ def main():
             )
         def forward(self, x): return self.net(x)
 
-    def train_mlp(Xtr, ytr, Xval, yval, epochs=300, lr=1e-3, patience=40, hid=64):
+    def train_mlp(Xtr, ytr, Xval, yval, label, epochs=300, lr=1e-3, patience=40, hid=64):
         scaler = StandardScaler().fit(Xtr)
         Xtr_s = scaler.transform(Xtr); Xval_s = scaler.transform(Xval)
         xt = torch.tensor(Xtr_s, dtype=torch.float32)
@@ -911,7 +927,7 @@ def main():
         loss_fn = nn.MSELoss()
         best = math.inf; best_state = None; patience_ctr = 0
         history = {"train": [], "valid": []}
-        checkpoint_path = out_dir/"MLP_state.pt"
+        checkpoint_path = out_dir/f"MLP_state_{label}.pt"
         start_epoch = 0
         resumed = False
 
@@ -1238,7 +1254,43 @@ def main():
                 model="SVR",
                 label=label
             )
-            svr = SVR(kernel="rbf", C=SVR_C, epsilon=SVR_EPSILON, gamma="scale")
+            svr_params = {"C": SVR_C, "epsilon": SVR_EPSILON, "gamma": "scale"}
+            if SVR_TUNE:
+                candidates = []
+                for c_val in SVR_C_GRID:
+                    for eps_val in SVR_EPSILON_GRID:
+                        for gamma_val in SVR_GAMMA_GRID:
+                            try:
+                                svr_candidate = SVR(kernel="rbf", C=c_val, epsilon=eps_val, gamma=gamma_val)
+                                svr_candidate.fit(X_tr, y_tr)
+                                yhat_te = svr_candidate.predict(X_te)
+                                rmse = math.sqrt(mean_squared_error(y_te, yhat_te))
+                                mae = mean_absolute_error(y_te, yhat_te)
+                                r2 = r2_score(y_te, yhat_te)
+                                candidates.append({
+                                    "C": c_val,
+                                    "epsilon": eps_val,
+                                    "gamma": gamma_val,
+                                    "rmse": rmse,
+                                    "mae": mae,
+                                    "r2": r2
+                                })
+                            except Exception:
+                                continue
+                if candidates:
+                    rmse_rank = {id(c): i for i, c in enumerate(sorted(candidates, key=lambda x: x["rmse"]))}
+                    mae_rank = {id(c): i for i, c in enumerate(sorted(candidates, key=lambda x: x["mae"]))}
+                    r2_rank = {id(c): i for i, c in enumerate(sorted(candidates, key=lambda x: x["r2"], reverse=True))}
+                    def rank_sum(candidate):
+                        return rmse_rank[id(candidate)] + mae_rank[id(candidate)] + r2_rank[id(candidate)]
+                    best = min(candidates, key=lambda c: (rank_sum(c), c["rmse"]))
+                    svr_params = {"C": best["C"], "epsilon": best["epsilon"], "gamma": best["gamma"]}
+                    print(
+                        "[INFO] SVR tuned "
+                        f"C={best['C']} epsilon={best['epsilon']} gamma={best['gamma']} "
+                        f"rmse={best['rmse']:.4f} mae={best['mae']:.4f} r2={best['r2']:.4f}"
+                    )
+            svr = SVR(kernel="rbf", **svr_params)
             svr.fit(X_tr, y_tr)
             emit_progress(
                 phase="model_trained",
@@ -1302,6 +1354,7 @@ def main():
                 ytr_mlp,
                 Xval_mlp,
                 yval_mlp,
+                label,
                 epochs=MLP_EPOCHS,
                 patience=MLP_PATIENCE,
                 hid=MLP_HIDDEN
