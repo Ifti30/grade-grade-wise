@@ -49,6 +49,7 @@ class ApiClient {
   }
 
   private async fetch(endpoint: string, options: RequestInit = {}) {
+    const retry = (options as { _retry?: boolean })._retry !== true;
     const headers: HeadersInit = {
       ...options.headers,
     };
@@ -59,10 +60,15 @@ class ApiClient {
 
     const response = await fetch(`${API_URL}${endpoint}`, {
       ...options,
+      credentials: 'include',
       headers,
     });
 
-    if (response.status === 401) {
+    if (response.status === 401 && retry) {
+      const refreshed = await this.refreshToken();
+      if (refreshed) {
+        return this.fetch(endpoint, { ...options, _retry: true } as RequestInit);
+      }
       this.clearToken();
       window.location.href = '/signin';
       throw new Error('Unauthorized');
@@ -98,6 +104,24 @@ class ApiClient {
     return data;
   }
 
+  async refreshToken() {
+    try {
+      const response = await fetch(`${API_URL}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!response.ok) return false;
+      const data = await response.json();
+      if (data?.token) {
+        this.setToken(data.token);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   async me() {
     return this.fetch('/auth/me');
   }
@@ -120,6 +144,10 @@ class ApiClient {
 
   getTrainLogsUrl(runId: string) {
     return `${API_URL}/models/train/${runId}/logs`;
+  }
+
+  async terminateTraining(runId: string) {
+    return this.fetch(`/models/train/${runId}/terminate`, { method: 'POST' });
   }
 
   async getModelSummary() {

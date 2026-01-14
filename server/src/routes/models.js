@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { PrismaClient } from '@prisma/client';
 import { authenticateToken } from '../auth.js';
 import { validateConfig } from '../utils/validate-config.js';
-import { runPythonTrain } from '../utils/python-runner.js';
+import { runPythonTrain, terminateTrainingRun } from '../utils/python-runner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -293,6 +293,41 @@ router.get('/train/:runId/logs', async (req, res) => {
   } catch (error) {
     console.error('SSE setup error:', error);
     res.status(500).json({ error: 'Failed to stream logs' });
+  }
+});
+
+// Terminate training run
+router.post('/train/:runId/terminate', authenticateToken, async (req, res) => {
+  try {
+    const { runId } = req.params;
+    const modelRun = await prisma.modelRun.findFirst({
+      where: { id: runId, orgId: req.orgId }
+    });
+
+    if (!modelRun) {
+      return res.status(404).json({ error: 'Training run not found' });
+    }
+
+    if (modelRun.status !== 'RUNNING' && modelRun.status !== 'PENDING') {
+      return res.status(409).json({ error: 'Training is not running' });
+    }
+
+    const terminated = terminateTrainingRun(runId);
+    if (!terminated) {
+      return res.status(409).json({ error: 'Training process not active on server' });
+    }
+
+    try {
+      const logPath = path.join(modelRun.artifactsDir, 'train.log');
+      await fs.appendFile(logPath, `[WARN] Termination requested at ${new Date().toISOString()}\n`);
+    } catch (error) {
+      console.error('Failed to append termination log:', error);
+    }
+
+    res.json({ status: 'terminating' });
+  } catch (error) {
+    console.error('Terminate training error:', error);
+    res.status(500).json({ error: 'Failed to terminate training' });
   }
 });
 

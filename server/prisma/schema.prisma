@@ -22,6 +22,8 @@ model User {
   org          Organization @relation(fields: [orgId], references: [id])
   email        String       @unique
   passwordHash String
+  refreshTokenHash String?
+  refreshTokenExpires DateTime?
   createdAt    DateTime     @default(now())
 
   @@index([orgId, createdAt(sort: Desc)])

@@ -1,5 +1,5 @@
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -164,16 +164,82 @@ const renderDistribution = (
 };
 
 export default function TrainModels({ embedded = false }: { embedded?: boolean }) {
+  const ACTIVE_TRAIN_RUN_KEY = 'activeTrainRunId';
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [file, setFile] = useState<File | null>(null);
   const [gradeScaleFile, setGradeScaleFile] = useState<File | null>(null);
   const [training, setTraining] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
   const [trainingStatus, setTrainingStatus] = useState<string | null>(null);
+  const [terminating, setTerminating] = useState(false);
+  const [autoCloseOnComplete, setAutoCloseOnComplete] = useState(false);
   const [datasetProfile, setDatasetProfile] = useState<DatasetProfile | null>(null);
   const [datasetError, setDatasetError] = useState<string | null>(null);
   const [gradeScaleError, setGradeScaleError] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  const clearActiveRun = () => {
+    setRunId(null);
+    localStorage.removeItem(ACTIVE_TRAIN_RUN_KEY);
+    setTraining(false);
+    setTrainingStatus(null);
+    setTerminating(false);
+    setAutoCloseOnComplete(false);
+  };
+
+  useEffect(() => {
+    const savedRunId = localStorage.getItem(ACTIVE_TRAIN_RUN_KEY);
+    if (savedRunId) {
+      setRunId(savedRunId);
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const syncRunStatus = async () => {
+      try {
+        const status = await api.getModelStatus();
+        if (!active) return;
+        const lastRun = status?.lastRun;
+        const isRunning = lastRun && (lastRun.status === 'RUNNING' || lastRun.status === 'PENDING');
+        if (isRunning) {
+          setRunId(lastRun.id);
+          setTraining(true);
+          localStorage.setItem(ACTIVE_TRAIN_RUN_KEY, lastRun.id);
+        } else {
+          clearActiveRun();
+        }
+      } catch (error) {
+        console.error('Failed to sync training status:', error);
+      }
+    };
+    syncRunStatus();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!runId) return;
+    let active = true;
+    const intervalId = setInterval(async () => {
+      try {
+        const status = await api.getModelStatus();
+        if (!active) return;
+        const lastRun = status?.lastRun;
+        const isRunning = lastRun && (lastRun.status === 'RUNNING' || lastRun.status === 'PENDING');
+        if (!isRunning) {
+          clearActiveRun();
+        }
+      } catch (error) {
+        console.error('Failed to refresh training status:', error);
+      }
+    }, 5000);
+    return () => {
+      active = false;
+      clearInterval(intervalId);
+    };
+  }, [runId]);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -351,6 +417,7 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
     try {
       const result = await api.startTraining(file, config);
       setRunId(result.runId);
+      localStorage.setItem(ACTIVE_TRAIN_RUN_KEY, result.runId);
       toast.success('Training started!');
     } catch (error: any) {
       toast.error(error.message || 'Failed to start training');
@@ -360,19 +427,38 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
 
   const handleTrainingComplete = (status: string) => {
     setTrainingStatus(status);
+    setTerminating(false);
     if (status === 'SUCCEEDED') {
       toast.success('Training completed successfully!');
     } else {
       toast.error('Training failed');
       setTraining(false);
     }
+    if (autoCloseOnComplete) {
+      clearActiveRun();
+    }
   };
 
   const handleCloseLogs = () => {
-    setRunId(null);
-    setTraining(false);
-    setTrainingStatus(null);
+    clearActiveRun();
     navigate('/dashboard/summary');
+  };
+
+  const handleTerminateTraining = async () => {
+    if (!runId || terminating) return;
+    setTerminating(true);
+    setAutoCloseOnComplete(true);
+    try {
+      await api.terminateTraining(runId);
+      toast.success('Termination requested. Waiting for shutdown...');
+    } catch (error: any) {
+      const message = error?.message || 'Failed to terminate training';
+      toast.error(message);
+      if (message.includes('not active on server')) {
+        clearActiveRun();
+      }
+      setTerminating(false);
+    }
   };
 
   if (runId) {
@@ -390,13 +476,17 @@ export default function TrainModels({ embedded = false }: { embedded?: boolean }
           runId={runId}
           onComplete={handleTrainingComplete}
         />
-        {trainingStatus && (
-          <div className="flex justify-center">
+        <div className="flex justify-center gap-3">
+          {trainingStatus ? (
             <Button variant="outline" onClick={handleCloseLogs}>
               Close Logs
             </Button>
-          </div>
-        )}
+          ) : (
+            <Button variant="destructive" onClick={handleTerminateTraining} disabled={terminating}>
+              {terminating ? 'Terminating...' : 'Terminate Training'}
+            </Button>
+          )}
+        </div>
       </div>
     );
 

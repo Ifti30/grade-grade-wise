@@ -28,6 +28,8 @@ function resolvePythonBinary() {
 }
 
 const PYTHON_BIN = resolvePythonBinary();
+const activeTrainProcesses = new Map();
+const terminatedTrainRuns = new Set();
 
 // Resolve script paths ABSOLUTELY so CWD doesn't matter
 const TRAIN_SCRIPT = path.resolve(__dirname, '../../ml/train.py');
@@ -162,6 +164,7 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  activeTrainProcesses.set(runId, pythonProcess);
 
   let resultJson = null;
   let stderr = '';
@@ -226,6 +229,8 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
   return new Promise((resolve, reject) => {
     pythonProcess.on('close', async (code, signal) => {
       console.log('[train] process closed', { code, signal });
+      activeTrainProcesses.delete(runId);
+      const wasTerminated = terminatedTrainRuns.delete(runId);
       const { result, error } = catcher.getResult();
       if (!resultJson && result) {
         resultJson = result;
@@ -233,6 +238,10 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
 
       if (error) {
         resultJson = { status: 'error', error: error.message };
+      }
+
+      if (wasTerminated) {
+        resultJson = { status: 'error', error: 'Training terminated by user.' };
       }
 
       console.log('[train] result', resultJson);
@@ -305,6 +314,8 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
 
     pythonProcess.on('error', async (error) => {
       console.error('[train] spawn error', error);
+      activeTrainProcesses.delete(runId);
+      terminatedTrainRuns.delete(runId);
       try {
         await logHandle.write(`Failed to start Python process (${PYTHON_BIN}): ${error.message}\n`);
       } catch (writeErr) {
@@ -325,6 +336,21 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
       reject(error);
     });
   });
+}
+
+export function terminateTrainingRun(runId) {
+  const process = activeTrainProcesses.get(runId);
+  if (!process) return false;
+  terminatedTrainRuns.add(runId);
+  if (!process.killed) {
+    process.kill('SIGTERM');
+    setTimeout(() => {
+      if (!process.killed) {
+        process.kill('SIGKILL');
+      }
+    }, 5000);
+  }
+  return true;
 }
 
 export async function runPythonPredict(orgId, studentJsonPath, artifactsDir, outFile, creditHours) {

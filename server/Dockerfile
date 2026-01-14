@@ -21,9 +21,12 @@ RUN npm install
 # Copy the rest of the server code
 COPY . .
 
+# Ensure startup script is executable
+RUN chmod +x /app/scripts/resource-logger.sh
+
 # Expose the API port
 EXPOSE 3000
 
 # Start the server in production mode (no file-watching)
 ENV NODE_ENV=production
-CMD ["npm", "run", "start"]
+CMD ["sh", "-c", "/app/scripts/resource-logger.sh & npm run start"]

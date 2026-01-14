@@ -48,7 +48,243 @@ BOUNDS = {
 
 SCHEMA_VERSION = "v2_option2_nextcgpa_risk"
 
+# ------------------------- Data cleaning -------------------------
+# Normalize input records to a consistent schema:
+# - coerce types, clamp impossible values, dedupe repeated semesters/courses
+# - keep counters for diagnostics without hard-failing the run
+def coerce_float(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if math.isnan(num) or math.isinf(num):
+        return None
+    return num
+
+def coerce_int(value):
+    num = coerce_float(value)
+    if num is None:
+        return None
+    return int(num)
+
+def is_missing(value):
+    if value is None or value == "":
+        return True
+    if isinstance(value, float) and math.isnan(value):
+        return True
+    return False
+
+def clamp_value(value, min_value=None, max_value=None):
+    if value is None:
+        return None
+    if min_value is not None and value < min_value:
+        return min_value
+    if max_value is not None and value > max_value:
+        return max_value
+    return value
+
+def sanitize_semester(sem, grade_points, max_gpa, stats):
+    """Clean a single semester dict (attendance, credits, per-course grades)."""
+    if not isinstance(sem, dict):
+        stats["invalid_semesters"] += 1
+        return None
+    cleaned = {}
+
+    att_val = coerce_float(sem.get("attendancePercentage"))
+    if att_val is not None:
+        if att_val < 0 or att_val > 100:
+            stats["attendance_clamped"] += 1
+        att_val = clamp_value(att_val, 0, 100)
+        cleaned["attendancePercentage"] = att_val
+    else:
+        stats["missing_attendance"] += 1
+
+    credit_val = coerce_float(sem.get("creditHours"))
+    if credit_val is not None and credit_val > 0:
+        cleaned["creditHours"] = credit_val
+    else:
+        if credit_val is not None:
+            stats["invalid_credit_hours"] += 1
+        stats["missing_credit_hours"] += 1
+
+    course_map = {}
+    courses = sem.get("courses")
+    if isinstance(courses, list):
+        for course in courses:
+            if not isinstance(course, dict):
+                continue
+            code = (
+                course.get("code")
+                or course.get("course_code")
+                or course.get("courseId")
+                or course.get("id")
+                or course.get("name")
+            )
+            grade = course.get("grade") or course.get("letterGrade") or course.get("result")
+            if code is None:
+                continue
+            key = str(code)
+            if key in course_map:
+                stats["duplicate_courses"] += 1
+            course_map[key] = grade
+
+    for key, value in sem.items():
+        if key in (
+            "attendancePercentage",
+            "creditHours",
+            "courses",
+            "semester",
+            "semester_no",
+            "sem_no",
+            "semesterNumber",
+            "term"
+        ):
+            continue
+        if value is None or value == "":
+            continue
+        if key in course_map:
+            stats["duplicate_courses"] += 1
+        course_map[str(key)] = value
+
+    for key, grade in course_map.items():
+        if isinstance(grade, (int, float)):
+            if math.isnan(float(grade)):
+                stats["invalid_grades"] += 1
+                continue
+            val = clamp_value(float(grade), 0, max_gpa)
+            if val != float(grade):
+                stats["grade_clamped"] += 1
+                stats["grade_clamped_by_field"]["course_numeric"] += 1
+            cleaned[key] = val
+        elif grade in grade_points:
+            cleaned[key] = grade
+        else:
+            stats["invalid_grades"] += 1
+
+    return cleaned
+
+def merge_semesters(existing, incoming, stats):
+    """Merge two semester dicts, preferring existing values and de-duping courses."""
+    if existing is None:
+        return incoming
+    merged = dict(existing)
+
+    if "attendancePercentage" not in merged and "attendancePercentage" in incoming:
+        merged["attendancePercentage"] = incoming["attendancePercentage"]
+    if "creditHours" not in merged and "creditHours" in incoming:
+        merged["creditHours"] = incoming["creditHours"]
+
+    for key, value in incoming.items():
+        if key in ("attendancePercentage", "creditHours"):
+            continue
+        if key in merged and merged[key] != value:
+            stats["duplicate_courses"] += 1
+        merged[key] = value
+    return merged
+
+def sanitize_semesters(semesters, grade_points, max_gpa, stats):
+    """Normalize semesters from dict or list into a clean dict keyed by semester number."""
+    cleaned = {}
+    if isinstance(semesters, dict):
+        items = semesters.items()
+    elif isinstance(semesters, list):
+        items = []
+        for entry in semesters:
+            if not isinstance(entry, dict):
+                continue
+            sem_no = (
+                entry.get("semester")
+                or entry.get("semester_no")
+                or entry.get("sem_no")
+                or entry.get("semesterNumber")
+                or entry.get("term")
+            )
+            if sem_no is None:
+                continue
+            items.append((sem_no, entry))
+    else:
+        stats["invalid_semesters"] += 1
+        return cleaned
+
+    for sem_no, sem in items:
+        sem_id = coerce_int(sem_no)
+        if sem_id is None:
+            continue
+        key = str(sem_id)
+        cleaned_sem = sanitize_semester(sem, grade_points, max_gpa, stats)
+        if cleaned_sem is None:
+            continue
+        if key in cleaned:
+            stats["duplicate_semesters"] += 1
+            cleaned[key] = merge_semesters(cleaned[key], cleaned_sem, stats)
+        else:
+            cleaned[key] = cleaned_sem
+    return cleaned
+
+def sanitize_student(raw, grade_points, max_gpa, stats):
+    """Clean a student record and its nested semesters."""
+    if not isinstance(raw, dict):
+        stats["invalid_students"] += 1
+        return None
+    student = dict(raw)
+
+    raw_ssc = coerce_float(student.get("ssc_gpa"))
+    if raw_ssc is None:
+        stats["missing_demographics"] += 1
+        raw_ssc = 0.0
+    ssc = clamp_value(raw_ssc, 0, max_gpa)
+    if raw_ssc != ssc:
+        stats["grade_clamped"] += 1
+        stats["grade_clamped_by_field"]["ssc_gpa"] += 1
+    student["ssc_gpa"] = float(ssc)
+
+    raw_hsc = coerce_float(student.get("hsc_gpa"))
+    if raw_hsc is None:
+        stats["missing_demographics"] += 1
+        raw_hsc = 0.0
+    hsc = clamp_value(raw_hsc, 0, max_gpa)
+    if raw_hsc != hsc:
+        stats["grade_clamped"] += 1
+        stats["grade_clamped_by_field"]["hsc_gpa"] += 1
+    student["hsc_gpa"] = float(hsc)
+
+    birth_year = coerce_int(student.get("birth_year"))
+    if birth_year is None:
+        stats["missing_demographics"] += 1
+        birth_year = 0
+    student["birth_year"] = int(birth_year)
+
+    student["gender"] = str(student.get("gender") or "")
+
+    semesters = sanitize_semesters(student.get("semesters", {}), grade_points, max_gpa, stats)
+    student["semesters"] = semesters
+    return student
+
+def merge_students(existing, incoming, stats):
+    """Merge duplicate student records by filling missing demographics and semesters."""
+    merged = dict(existing)
+    for key in ("ssc_gpa", "hsc_gpa", "birth_year", "gender"):
+        if is_missing(merged.get(key)) and not is_missing(incoming.get(key)):
+            merged[key] = incoming.get(key)
+    existing_sems = merged.get("semesters", {})
+    incoming_sems = incoming.get("semesters", {})
+    if isinstance(existing_sems, dict) and isinstance(incoming_sems, dict):
+        for sem_key, sem_value in incoming_sems.items():
+            if sem_key in existing_sems:
+                stats["duplicate_semesters"] += 1
+                existing_sems[sem_key] = merge_semesters(existing_sems[sem_key], sem_value, stats)
+            else:
+                existing_sems[sem_key] = sem_value
+        merged["semesters"] = existing_sems
+    return merged
+    return merged
+
 # ------------------------- GPA helpers -------------------------
+# Compute semester/CGPA values in a resilient way (skip invalid/missing data).
 def validate_grade_points(grade_points: dict):
     if not isinstance(grade_points, dict) or len(grade_points) < 2 or len(grade_points) > 30:
         raise ValueError("GRADE_POINTS must be an object with 2..30 entries")
@@ -63,12 +299,19 @@ def validate_grade_points(grade_points: dict):
 def compute_semester_gpa(sem, GP):
     if not isinstance(sem, dict):
         return None
+    max_gpa = float(max(GP.values())) if GP else 4.0
     pts = []
     for k, g in sem.items():
-        if k == "attendancePercentage":
+        if k in ("attendancePercentage", "creditHours", "courses"):
             continue
         if g in GP:
             pts.append(GP[g])
+        elif isinstance(g, (int, float)):
+            val = float(g)
+            if math.isnan(val) or math.isinf(val):
+                continue
+            val = clamp_value(val, 0, max_gpa)
+            pts.append(val)
     return float(np.mean(pts)) if pts else None
 
 def semester_gpa(sem, GP):
@@ -105,6 +348,7 @@ def cumulative_cgpa(semesters, GP):
     return compute_cgpa(semesters, sem_nums, len(sem_nums), GP)
 
 def build_features_for_final(student, GP):
+    """Features/label for final CGPA prediction from all but last semester."""
     semesters = student.get("semesters", {})
     if not semesters: return None, None
     sem_nums = sorted(map(int, semesters.keys()))
@@ -142,6 +386,7 @@ def build_features_for_final(student, GP):
     return X, float(y)
 
 def build_features_for_next(student, GP):
+    """Features for next-semester CGPA prediction using all completed semesters."""
     semesters = student.get("semesters", {})
     if not semesters: return None
     sem_nums = sorted(map(int, semesters.keys()))
@@ -171,6 +416,7 @@ def build_features_for_next(student, GP):
     return X
 
 def build_features_for_next_label(student, GP):
+    """Features/label for next-semester CGPA (train-time windows)."""
     semesters = student.get("semesters", {})
     if not semesters: return None, None
     sem_nums = sorted(map(int, semesters.keys()))
@@ -206,6 +452,7 @@ def build_features_for_next_label(student, GP):
     return X, float(y)
 
 def average_credit_hours(student):
+    """Average credit hours across valid semesters."""
     semesters = student.get("semesters", {})
     if not semesters:
         return None
@@ -221,6 +468,7 @@ def average_credit_hours(student):
     return float(np.mean(loads))
 
 def iter_student_windows(student):
+    """Yield rolling window sizes for training (1..n-1)."""
     semesters = student.get("semesters", {})
     if not isinstance(semesters, dict):
         return []
@@ -230,6 +478,7 @@ def iter_student_windows(student):
     return list(range(1, len(sem_nums)))
 
 def build_features_upto_s(student, GP, s, gpa_trend):
+    """Build feature vector for a student using semesters up to s."""
     semesters = student.get("semesters", {})
     if not isinstance(semesters, dict):
         return None
@@ -268,13 +517,7 @@ def predict_single_student(
     feat_names: list,
     explicit_s: Optional[int] = None
 ):
-    """
-    Reference inference function.
-    Uses identical feature extraction, CGPA computation,
-    and risk thresholds as training.
-    Not used in training or evaluation.
-    Intended for validation, debugging, and demonstration.
-    """
+    """Reference inference flow for debugging (mirrors training feature logic)."""
     semesters = student.get("semesters", {})
     if not isinstance(semesters, dict):
         return None
@@ -342,6 +585,7 @@ def predict_single_student(
     }
 
 def emit_progress(**data):
+    """Emit progress events consumed by the Node SSE logger."""
     print(
         "__PROGRESS__" +
         json.dumps(data, separators=(",", ":")),
@@ -360,6 +604,7 @@ def emit_result(payload: dict):
     
 # ------------------------- Main -------------------------
 def main():
+    # Pipeline: load config/data -> clean -> build features -> train -> evaluate -> save artifacts.
     import warnings; warnings.filterwarnings("ignore")
 
     ap = argparse.ArgumentParser()
@@ -436,7 +681,7 @@ def main():
     except Exception:
         pass
 
-    # Load data
+    # Load raw data and normalize shape
     train_path = args.train_json
     assert os.path.exists(train_path), f"Training file not found: {train_path}"
     payload = json.load(open(train_path))
@@ -446,17 +691,62 @@ def main():
         data = payload
     if not isinstance(data, list):
         raise ValueError("Training data must be a list of students or an object with a students list.")
-    data = [student for student in data if isinstance(student, dict)]
-    student_ids = []
+    stats = {
+        "invalid_students": 0,
+        "invalid_semesters": 0,
+        "duplicate_students": 0,
+        "duplicate_semesters": 0,
+        "duplicate_courses": 0,
+        "missing_demographics": 0,
+        "missing_attendance": 0,
+        "missing_credit_hours": 0,
+        "invalid_credit_hours": 0,
+        "attendance_clamped": 0,
+        "grade_clamped": 0,
+        "invalid_grades": 0,
+        "grade_clamped_by_field": {
+            "ssc_gpa": 0,
+            "hsc_gpa": 0,
+            "course_numeric": 0
+        }
+    }
+    cleaned_students = {}
     for idx, student in enumerate(data):
+        if not isinstance(student, dict):
+            stats["invalid_students"] += 1
+            continue
         sid = student.get("student_id")
         if sid is None or sid == "":
             sid = f"stu_{idx}"
         student["student_id"] = sid
-        student_ids.append(sid)
+        cleaned = sanitize_student(student, GRADE_POINTS, max_gpa, stats)
+        if cleaned is None:
+            continue
+        if sid in cleaned_students:
+            stats["duplicate_students"] += 1
+            cleaned_students[sid] = merge_students(cleaned_students[sid], cleaned, stats)
+        else:
+            cleaned_students[sid] = cleaned
+    data = list(cleaned_students.values())
+    print(f"[RUN_START] runId={args.model_id} org={org_id} time={datetime.datetime.utcnow().isoformat()}Z")
     print(f"[INFO] org={org_id} students={len(data)} max_gpa={max_gpa}")
+    print(
+        "[INFO] preprocessing " +
+        "invalid_students={invalid_students} invalid_semesters={invalid_semesters} "
+        "duplicate_students={duplicate_students} duplicate_semesters={duplicate_semesters} "
+        "duplicate_courses={duplicate_courses} missing_demographics={missing_demographics} "
+        "missing_attendance={missing_attendance} missing_credit_hours={missing_credit_hours} "
+        "invalid_credit_hours={invalid_credit_hours} attendance_clamped={attendance_clamped} "
+        "grade_clamped={grade_clamped} invalid_grades={invalid_grades}".format(**stats)
+    )
+    print(
+        "[INFO] grade_clamped_by_field " +
+        "ssc_gpa={ssc_gpa} hsc_gpa={hsc_gpa} course_numeric={course_numeric}".format(
+            **stats["grade_clamped_by_field"]
+        )
+    )
 
-    # Build datasets
+    # Build feature/label datasets (final CGPA and next-sem CGPA)
     X_final, y_final = [], []
     X_next, y_next = [], []
     sid_final = []
@@ -494,7 +784,7 @@ def main():
             total_gpa_sum += sem_gpa
             total_gpa_count += 1
 
-        # ---------- BUILD ROLLING WINDOW DATA ----------
+        # Build rolling windows: for each prefix semester count, predict next-sem CGPA.
 
         cgpa_1 = compute_cgpa(semesters, sem_nums, 1, GRADE_POINTS)
         if cgpa_1 is None:
@@ -521,6 +811,7 @@ def main():
         if avg_ch is not None:
             avg_course_loads.append(avg_ch)
 
+    # Aggregate cohort stats used in metadata/reporting.
     semester_gpa_by_load = {
         str(k): float(semester_gpa_sums[k]/semester_gpa_counts[k])
         for k in semester_gpa_sums
@@ -586,6 +877,11 @@ def main():
         phase="init",
         modelId=args.model_id,
         orgId=org_id
+    )
+    print(
+        "[INFO] enabled_models " +
+        f"DecisionTree={DT_ENABLE} RandomForest={RF_ENABLE} SVR={SVR_ENABLE} "
+        f"LightGBM={LGBM_ENABLE} MLP={MLP_ENABLE}"
     )
 
     # Split for evaluation
@@ -898,6 +1194,11 @@ def main():
         learning_curves = {}
 
         if DT_ENABLE:
+            emit_progress(
+                phase="model_start",
+                model="DecisionTree",
+                label=label
+            )
             dt = DecisionTreeRegressor(
                 random_state=RANDOM_SEED,
                 max_depth=DT_MAX_DEPTH,
@@ -912,6 +1213,11 @@ def main():
             models["DecisionTree"] = dt
 
         if RF_ENABLE:
+            emit_progress(
+                phase="model_start",
+                model="RandomForest",
+                label=label
+            )
             rf = RandomForestRegressor(
                 n_estimators=RF_TREES,
                 random_state=RANDOM_SEED,
@@ -928,6 +1234,11 @@ def main():
             models["RandomForest"] = rf
 
         if SVR_ENABLE:
+            emit_progress(
+                phase="model_start",
+                model="SVR",
+                label=label
+            )
             svr = SVR(kernel="rbf", C=SVR_C, epsilon=SVR_EPSILON, gamma="scale")
             svr.fit(X_tr, y_tr)
             emit_progress(
@@ -938,6 +1249,11 @@ def main():
             models["SVR"] = svr
 
         if LGBM_ENABLE:
+            emit_progress(
+                phase="model_start",
+                model="LightGBM",
+                label=label
+            )
             lgbm = lgb.LGBMRegressor(
                 n_estimators=LGBM_N_EST,
                 learning_rate=0.03,
@@ -976,6 +1292,11 @@ def main():
         mlp_model = None
         mlp_scaler = None
         if MLP_ENABLE:
+            emit_progress(
+                phase="model_start",
+                model="MLP",
+                label=label
+            )
             Xtr_mlp, Xval_mlp, ytr_mlp, yval_mlp = _tts(X_tr, y_tr, test_size=0.2, random_state=RANDOM_SEED)
             mlp_model, mlp_scaler, mlp_history, mlp_resumed = train_mlp(
                 Xtr_mlp,

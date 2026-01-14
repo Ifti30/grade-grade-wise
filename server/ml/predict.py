@@ -11,7 +11,7 @@ Fixed prediction script:
 import argparse, os, sys, json, numpy as np, datetime, joblib
 from pathlib import Path
 
-# Force headless backend so plotting works in containers
+# Optional plotting (can be disabled via PREDICT_PLOTS=0).
 import matplotlib
 matplotlib.use("Agg")
 
@@ -25,6 +25,7 @@ except Exception:
     Line2D = None
 
 def semester_gpa(sem, GP):
+    """Compute semester GPA from per-course grades."""
     pts = []
     for k, g in sem.items():
         if k != "attendancePercentage" and g in GP:
@@ -32,6 +33,7 @@ def semester_gpa(sem, GP):
     return float(np.mean(pts)) if pts else None
 
 def compute_cgpa(semesters, sem_nums, upto, GP):
+    """Compute cumulative GPA up to a semester index (1-based count)."""
     use = sem_nums[:upto]
     total_points = 0.0
     total_hours = 0.0
@@ -52,6 +54,7 @@ def compute_cgpa(semesters, sem_nums, upto, GP):
     return float(total_points / total_hours)
 
 def build_features_for_final(student, GP, feature_order):
+    """Build features for final CGPA prediction using semesters up to n-1."""
     semesters = student.get("semesters", {})
     if not semesters: return None, None
     sem_nums = sorted(map(int, semesters.keys()))
@@ -87,6 +90,7 @@ def build_features_for_final(student, GP, feature_order):
     return X, None
 
 def build_features_for_next(student, GP, feature_order):
+    """Build features for next-semester CGPA prediction using all completed semesters."""
     semesters = student.get("semesters", {})
     if not semesters: return None
     sem_nums = sorted(map(int, semesters.keys()))
@@ -122,6 +126,7 @@ def build_features_for_next(student, GP, feature_order):
     return X
 
 def compute_current(student, GP):
+    """Compute current semester GPA and cumulative CGPA."""
     sems = student.get("semesters", {})
     if not sems: return None, None, None
     sem_nums = sorted(map(int, sems.keys()))
@@ -132,6 +137,7 @@ def compute_current(student, GP):
     return last_sem_gpa, cgpa, last
 
 def average_credit_hours(student):
+    """Average credit hours across valid semesters."""
     semesters = student.get("semesters", {})
     if not semesters:
         return None
@@ -147,6 +153,7 @@ def average_credit_hours(student):
     return float(np.mean(loads))
 
 def main():
+    # Pipeline: load input -> load artifacts -> build features -> predict -> post-process -> emit result.
     ap = argparse.ArgumentParser()
     ap.add_argument("--org-id", required=True)
     ap.add_argument("--student-json", required=True)
@@ -215,7 +222,7 @@ def main():
     enabled_final = set(meta.get("enabled_models") or [])
     enabled_next = set(meta.get("next_models") or enabled_final)
 
-    # Load models
+    # Load regression models (final CGPA + next-sem CGPA)
     models = {}
     for name in ["DecisionTree","RandomForest","LightGBM","SVR"]:
         p = art_dir/f"{name}.joblib"
@@ -230,7 +237,7 @@ def main():
         elif name in models and (not enabled_next or name in enabled_next):
             next_models[name] = models[name]
 
-    # MLP + scaler
+    # Optional MLP models (PyTorch + scaler)
     import torch, torch.nn as nn
     class MLP(nn.Module):
         def __init__(self, in_dim, hid=64):
@@ -275,18 +282,18 @@ def main():
         except Exception:
             report = None
 
-    # Features
+    # Build feature vectors
     Xf_new, _ = build_features_for_final(student, GP, feat_order)
     Xn_new = build_features_for_next(student, GP, feat_order)
 
-    # Current
+    # Current GPA snapshot
     cur_sem_gpa, cur_cgpa, last_sem_idx = compute_current(student, GP)
     if cur_sem_gpa is not None:
         print(f"[INFO] current last-sem GPA (sem {last_sem_idx}) = {cur_sem_gpa:.2f}")
     if cur_cgpa is not None:
         print(f"[INFO] current CGPA (to sem {last_sem_idx}) = {cur_cgpa:.2f}")
 
-    # Predict final CGPA (5 models)
+    # Predict final CGPA
     preds_final = {}
     if Xf_new is not None:
         Xf = np.array(Xf_new, float).reshape(1,-1)
@@ -302,7 +309,7 @@ def main():
     else:
         print("[WARN] Not enough semesters for final CGPA prediction (needs ≥ 2).")
 
-    # Predict next semester GPA (RF+LGBM+SVR)
+    # Predict next semester CGPA
     preds_next = {}
     if Xn_new is not None:
         Xn = np.array(Xn_new, float).reshape(1,-1)
@@ -316,7 +323,7 @@ def main():
             with torch.no_grad():
                 preds_next["MLP"] = float(mlp_next_model(torch.tensor(Xn_s, dtype=torch.float32)).numpy().reshape(-1)[0])
 
-    # Ensemble mean
+    # Ensemble mean across available models
     ens_final = float(np.mean([v for v in preds_final.values()])) if preds_final else None
     ens_next  = float(np.mean([v for v in preds_next.values()])) if preds_next else None
 
@@ -377,7 +384,7 @@ def main():
             }
         }
 
-    # Risk from predicted next_sem_cgpa thresholds
+    # Risk bucket from predicted next_sem_cgpa thresholds
     risk_label = "Unknown"
     thresholds = meta.get("risk_thresholds")
     if not thresholds and report:
@@ -392,6 +399,7 @@ def main():
         else:
             risk_label = "Low"
 
+    # Optional plots saved alongside result JSON
     plots = {}
     if plt is not None:
         try:
@@ -432,6 +440,7 @@ def main():
         except Exception as e:
             print(f"[WARN] prediction plotting failed: {e}")
 
+    # Full payload saved to out_file for UI and auditing.
     result_payload = {
         "student_id": student.get("student_id"),
         "s_used": s_used,
@@ -464,6 +473,7 @@ def main():
         json.dump(hist, f, indent=2)
     print(f"[INFO] appended to {hist_path}")
 
+    # Minimal result payload streamed back to Node caller.
     print("__RESULT__" + json.dumps({
         "status": "ok",
         "predictions": result_payload["predictions"],

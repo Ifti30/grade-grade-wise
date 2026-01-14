@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Card } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Terminal } from 'lucide-react';
+import { api } from '@/lib/api';
 
 interface LogStreamProps {
   url: string;
@@ -13,6 +14,7 @@ interface LogStreamProps {
 export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
   const [logs, setLogs] = useState<string>('');
   const [status, setStatus] = useState<'connecting' | 'streaming' | 'complete' | 'error'>('connecting');
+  const [streamToken, setStreamToken] = useState(token);
   const scrollRef = useRef<HTMLPreElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -100,39 +102,77 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
   };
 
   useEffect(() => {
-    const eventSource = new EventSource(`${url}?token=${encodeURIComponent(token)}`);
+    setStreamToken(token);
+  }, [token]);
 
-    eventSource.onopen = () => {
-      setStatus('streaming');
+  useEffect(() => {
+    let cancelled = false;
+    let eventSource: EventSource | null = null;
+    let didRetry = false;
+
+    const openStream = (authToken: string) => {
+      eventSource = new EventSource(`${url}?token=${encodeURIComponent(authToken)}`);
+
+      eventSource.onopen = () => {
+        setStatus('streaming');
+      };
+
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          if (data.content) {
+            setLogs((prev) => prev + data.content);
+          }
+
+          if (data.complete) {
+            setStatus('complete');
+            onComplete?.(data.status);
+            eventSource?.close();
+          }
+        } catch (error) {
+          console.error('Failed to parse log event:', error);
+        }
+      };
+
+      eventSource.onerror = async () => {
+        if (!didRetry) {
+          didRetry = true;
+          eventSource?.close();
+          const refreshed = await api.refreshToken();
+          if (!cancelled && refreshed) {
+            const updatedToken = localStorage.getItem('token') || '';
+            setStreamToken(updatedToken);
+            openStream(updatedToken);
+            return;
+          }
+        }
+        setStatus('error');
+        eventSource?.close();
+      };
     };
 
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-
-        if (data.content) {
-          setLogs((prev) => prev + data.content);
-        }
-
-        if (data.complete) {
-          setStatus('complete');
-          onComplete?.(data.status);
-          eventSource.close();
-        }
-      } catch (error) {
-        console.error('Failed to parse log event:', error);
+    const init = async () => {
+      setStatus('connecting');
+      let nextToken = streamToken;
+      if (!nextToken) {
+        const refreshed = await api.refreshToken();
+        nextToken = refreshed ? (localStorage.getItem('token') || '') : '';
+      }
+      if (!cancelled && nextToken) {
+        openStream(nextToken);
+      } else if (!cancelled) {
+        setStatus('error');
       }
     };
 
-    eventSource.onerror = () => {
-      setStatus('error');
-      eventSource.close();
-    };
+    init();
 
     return () => {
-      eventSource.close();
+      cancelled = true;
+      eventSource?.close();
     };
-  }, [url, token, onComplete]);
+  }, [url, onComplete, streamToken]);
 
   useEffect(() => {
     // Auto-scroll to bottom
