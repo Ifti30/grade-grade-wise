@@ -27,12 +27,21 @@ except Exception:
 def semester_gpa(sem, GP):
     """Compute semester GPA from per-course grades."""
     pts = []
+    max_gpa = float(max(GP.values())) if GP else 4.0
     for k, g in sem.items():
-        if k != "attendancePercentage" and g in GP:
+        if k in ("attendancePercentage", "creditHours", "courses"):
+            continue
+        if g in GP:
             pts.append(GP[g])
+        elif isinstance(g, (int, float)):
+            val = float(g)
+            if np.isnan(val) or np.isinf(val):
+                continue
+            val = max(0.0, min(max_gpa, val))
+            pts.append(val)
     return float(np.mean(pts)) if pts else None
 
-def compute_cgpa(semesters, sem_nums, upto, GP):
+def compute_cgpa(semesters, sem_nums, upto, GP, default_credit_hours=None):
     """Compute cumulative GPA up to a semester index (1-based count)."""
     use = sem_nums[:upto]
     total_points = 0.0
@@ -46,14 +55,17 @@ def compute_cgpa(semesters, sem_nums, upto, GP):
             continue
         ch = sem.get("creditHours")
         if not isinstance(ch, (int, float)) or ch <= 0:
-            continue
+            if isinstance(default_credit_hours, (int, float)) and default_credit_hours > 0:
+                ch = default_credit_hours
+            else:
+                continue
         total_points += sem_gpa * float(ch)
         total_hours += float(ch)
     if total_hours <= 0:
         return None
     return float(total_points / total_hours)
 
-def build_features_for_final(student, GP, feature_order):
+def build_features_for_final(student, GP, feature_order, pass_gpa_min=2.0, default_credit_hours=None):
     """Build features for final CGPA prediction using semesters up to n-1."""
     semesters = student.get("semesters", {})
     if not semesters: return None, None
@@ -70,12 +82,13 @@ def build_features_for_final(student, GP, feature_order):
                 credit_hours.append(ch)
     avg_att = float(np.mean(att)) if att else 0.0
     s_count = len(sem_nums) - 1
-    cgpa_1 = compute_cgpa(semesters, sem_nums, 1, GP)
-    cgpa_s = compute_cgpa(semesters, sem_nums, s_count, GP)
+    cgpa_1 = compute_cgpa(semesters, sem_nums, 1, GP, default_credit_hours=default_credit_hours)
+    cgpa_s = compute_cgpa(semesters, sem_nums, s_count, GP, default_credit_hours=default_credit_hours)
     if cgpa_1 is None or cgpa_s is None:
         return None, None
     gpa_trend = 0.0 if s_count == 1 else float((cgpa_s - cgpa_1) / (s_count - 1))
     avg_ch = float(np.mean(credit_hours)) if credit_hours else 0.0
+    temporal = summarize_temporal_features(semesters, GP, sem_nums, s_count, pass_gpa_min)
     feature_map = {
         "ssc_gpa": float(student.get("ssc_gpa", 0.0)),
         "hsc_gpa": float(student.get("hsc_gpa", 0.0)),
@@ -83,13 +96,20 @@ def build_features_for_final(student, GP, feature_order):
         "birth_year": int(student.get("birth_year", 0)),
         "avg_credit_hours": avg_ch,
         "avg_attendance": avg_att,
-        "gpa_trend": float(gpa_trend)
+        "gpa_trend": float(gpa_trend),
+        "gpa_slope": temporal["gpa_slope"],
+        "gpa_accel": temporal["gpa_accel"],
+        "gpa_volatility": temporal["gpa_volatility"],
+        "att_slope": temporal["att_slope"],
+        "att_delta": temporal["att_delta"],
+        "pass_ratio": temporal["pass_ratio"],
+        "failed_count": temporal["failed_count"]
     }
     X = [feature_map.get(name, 0.0) for name in feature_order]
     assert len(X) == len(feature_order)
     return X, None
 
-def build_features_for_next(student, GP, feature_order):
+def build_features_for_next(student, GP, feature_order, pass_gpa_min=2.0, default_credit_hours=None):
     """Build features for next-semester CGPA prediction using all completed semesters."""
     semesters = student.get("semesters", {})
     if not semesters: return None
@@ -106,12 +126,13 @@ def build_features_for_next(student, GP, feature_order):
             credit_hours.append(ch)
     avg_att = float(np.mean(att)) if att else 0.0
     s_count = len(use)
-    cgpa_1 = compute_cgpa(semesters, sem_nums, 1, GP)
-    cgpa_s = compute_cgpa(semesters, sem_nums, s_count, GP)
+    cgpa_1 = compute_cgpa(semesters, sem_nums, 1, GP, default_credit_hours=default_credit_hours)
+    cgpa_s = compute_cgpa(semesters, sem_nums, s_count, GP, default_credit_hours=default_credit_hours)
     if cgpa_1 is None or cgpa_s is None:
         return None
     gpa_trend = 0.0 if s_count == 1 else float((cgpa_s - cgpa_1) / (s_count - 1))
     avg_ch = float(np.mean(credit_hours)) if credit_hours else 0.0
+    temporal = summarize_temporal_features(semesters, GP, sem_nums, s_count, pass_gpa_min)
     feature_map = {
         "ssc_gpa": float(student.get("ssc_gpa", 0.0)),
         "hsc_gpa": float(student.get("hsc_gpa", 0.0)),
@@ -119,13 +140,20 @@ def build_features_for_next(student, GP, feature_order):
         "birth_year": int(student.get("birth_year", 0)),
         "avg_credit_hours": avg_ch,
         "avg_attendance": avg_att,
-        "gpa_trend": float(gpa_trend)
+        "gpa_trend": float(gpa_trend),
+        "gpa_slope": temporal["gpa_slope"],
+        "gpa_accel": temporal["gpa_accel"],
+        "gpa_volatility": temporal["gpa_volatility"],
+        "att_slope": temporal["att_slope"],
+        "att_delta": temporal["att_delta"],
+        "pass_ratio": temporal["pass_ratio"],
+        "failed_count": temporal["failed_count"]
     }
     X = [feature_map.get(name, 0.0) for name in feature_order]
     assert len(X) == len(feature_order)
     return X
 
-def compute_current(student, GP):
+def compute_current(student, GP, default_credit_hours=None):
     """Compute current semester GPA and cumulative CGPA."""
     sems = student.get("semesters", {})
     if not sems: return None, None, None
@@ -133,7 +161,7 @@ def compute_current(student, GP):
     last = sem_nums[-1]
     sem = sems[str(last)]
     last_sem_gpa = semester_gpa(sem, GP)
-    cgpa = compute_cgpa(sems, sem_nums, len(sem_nums), GP)
+    cgpa = compute_cgpa(sems, sem_nums, len(sem_nums), GP, default_credit_hours=default_credit_hours)
     return last_sem_gpa, cgpa, last
 
 def average_credit_hours(student):
@@ -250,6 +278,8 @@ def main():
         def forward(self, x): return self.net(x)
 
     feat_order = meta["feature_order"]
+    pass_gpa_min = float(meta.get("pass_gpa_min", 2.0))
+    default_credit_hours = meta.get("default_credit_hours")
     mlp_model = None
     mlp_scaler = None
     mlp_path = art_dir/"MLP.pt"
@@ -283,11 +313,27 @@ def main():
             report = None
 
     # Build feature vectors
-    Xf_new, _ = build_features_for_final(student, GP, feat_order)
-    Xn_new = build_features_for_next(student, GP, feat_order)
+    Xf_new, _ = build_features_for_final(
+        student,
+        GP,
+        feat_order,
+        pass_gpa_min=pass_gpa_min,
+        default_credit_hours=default_credit_hours
+    )
+    Xn_new = build_features_for_next(
+        student,
+        GP,
+        feat_order,
+        pass_gpa_min=pass_gpa_min,
+        default_credit_hours=default_credit_hours
+    )
 
     # Current GPA snapshot
-    cur_sem_gpa, cur_cgpa, last_sem_idx = compute_current(student, GP)
+    cur_sem_gpa, cur_cgpa, last_sem_idx = compute_current(
+        student,
+        GP,
+        default_credit_hours=default_credit_hours
+    )
     if cur_sem_gpa is not None:
         print(f"[INFO] current last-sem GPA (sem {last_sem_idx}) = {cur_sem_gpa:.2f}")
     if cur_cgpa is not None:
@@ -497,3 +543,87 @@ if __name__ == "__main__":
         print(f"[ERROR] {e}", file=sys.stderr)
         print("__RESULT__" + json.dumps({"status":"error","error":str(e)}))
         sys.exit(1)
+def compute_course_stats(sem, GP, pass_gpa_min):
+    if not isinstance(sem, dict):
+        return 0, 0, 0
+    max_gpa = float(max(GP.values())) if GP else 4.0
+    attempted = 0
+    passed = 0
+    failed = 0
+    for k, g in sem.items():
+        if k in ("attendancePercentage", "creditHours", "courses"):
+            continue
+        value = None
+        if g in GP:
+            value = GP[g]
+        elif isinstance(g, (int, float)):
+            value = float(g)
+            if np.isnan(value) or np.isinf(value):
+                continue
+            value = max(0.0, min(max_gpa, value))
+        if value is None:
+            continue
+        attempted += 1
+        if value >= pass_gpa_min:
+            passed += 1
+        else:
+            failed += 1
+    return attempted, passed, failed
+
+def compute_linear_slope(values):
+    if not values or len(values) < 2:
+        return 0.0
+    x = np.arange(len(values), dtype=float)
+    y = np.array(values, dtype=float)
+    denom = np.var(x)
+    if denom == 0:
+        return 0.0
+    return float(np.cov(x, y, bias=True)[0, 1] / denom)
+
+def compute_acceleration(values):
+    if not values or len(values) < 3:
+        return 0.0
+    diffs = np.diff(values)
+    accel = np.diff(diffs)
+    return float(np.mean(accel)) if len(accel) else 0.0
+
+def compute_volatility(values):
+    if not values:
+        return 0.0
+    return float(np.std(values))
+
+def summarize_temporal_features(semesters, GP, sem_nums, upto, pass_gpa_min):
+    series_gpa = []
+    series_att = []
+    attempted_total = 0
+    passed_total = 0
+    failed_total = 0
+    for sem_no in sem_nums[:upto]:
+        sem = semesters.get(str(sem_no))
+        if not isinstance(sem, dict):
+            continue
+        gpa = semester_gpa(sem, GP)
+        if gpa is not None:
+            series_gpa.append(gpa)
+        att = sem.get("attendancePercentage")
+        if isinstance(att, (int, float)):
+            series_att.append(float(att))
+        attempted, passed, failed = compute_course_stats(sem, GP, pass_gpa_min)
+        attempted_total += attempted
+        passed_total += passed
+        failed_total += failed
+    gpa_slope = compute_linear_slope(series_gpa)
+    gpa_accel = compute_acceleration(series_gpa)
+    gpa_vol = compute_volatility(series_gpa)
+    att_slope = compute_linear_slope(series_att)
+    att_delta = float(series_att[-1] - series_att[0]) if len(series_att) >= 2 else 0.0
+    pass_ratio = (passed_total / attempted_total) if attempted_total > 0 else 0.0
+    return {
+        "gpa_slope": gpa_slope,
+        "gpa_accel": gpa_accel,
+        "gpa_volatility": gpa_vol,
+        "att_slope": att_slope,
+        "att_delta": att_delta,
+        "pass_ratio": pass_ratio,
+        "failed_count": float(failed_total)
+    }

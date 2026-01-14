@@ -574,11 +574,33 @@ router.get('/summary/stream', async (req, res) => {
     }
 
     writeSse(res, { type: 'start', totalChunks: chunks.length, index: 0 });
-    chunks.forEach((chunk, idx) => {
+    if (typeof res.flush === 'function') {
+      res.flush();
+    }
+
+    let idx = 0;
+    const intervalMs = Number(process.env.SUMMARY_STREAM_INTERVAL_MS || 20);
+    const timer = setInterval(() => {
+      if (idx >= chunks.length) {
+        writeSse(res, { type: 'complete', totalChunks: chunks.length, index: chunks.length });
+        if (typeof res.flush === 'function') {
+          res.flush();
+        }
+        clearInterval(timer);
+        res.end();
+        return;
+      }
+      const chunk = chunks[idx];
       writeSse(res, { ...chunk, index: idx + 1, totalChunks: chunks.length });
+      if (typeof res.flush === 'function') {
+        res.flush();
+      }
+      idx += 1;
+    }, Math.max(5, intervalMs));
+
+    req.on('close', () => {
+      clearInterval(timer);
     });
-    writeSse(res, { type: 'complete', totalChunks: chunks.length, index: chunks.length });
-    res.end();
   } catch (error) {
     console.error('Summary stream error:', error);
     res.status(500).json({ error: 'Failed to stream summary' });

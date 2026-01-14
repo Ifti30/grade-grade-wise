@@ -731,7 +731,7 @@ export default function DashboardSummary() {
                         <BarChart data={finalImportance} layout="vertical">
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis type="number" dataKey="importance" tickFormatter={(value) => formatDecimal(value, 3)} />
-                          <YAxis type="category" dataKey="feature" width={90} />
+                          <YAxis type="category" dataKey="feature" width={120} interval={0} tickMargin={4} />
                           <ChartTooltip content={<ChartTooltipContent formatter={(value) => formatDecimal(value, 3)} />} />
                           <Bar dataKey="importance" fill="var(--color-importance)" radius={[0, 6, 6, 0]} />
                         </BarChart>
@@ -812,7 +812,7 @@ export default function DashboardSummary() {
                         <BarChart data={nextImportance} layout="vertical">
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis type="number" dataKey="importance" tickFormatter={(value) => formatDecimal(value, 3)} />
-                          <YAxis type="category" dataKey="feature" width={90} />
+                          <YAxis type="category" dataKey="feature" width={120} interval={0} tickMargin={4} />
                           <ChartTooltip content={<ChartTooltipContent formatter={(value) => formatDecimal(value, 3)} />} />
                           <Bar dataKey="importance" fill="var(--color-importance)" radius={[0, 6, 6, 0]} />
                         </BarChart>

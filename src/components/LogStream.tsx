@@ -20,6 +20,7 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
   const scrollRef = useRef<HTMLPreElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const lastEventIdRef = useRef(0);
+  const summaryLoggedRef = useRef<Set<string>>(new Set());
 
   const renderLine = (display: string, index: number) => {
     if (!display) {
@@ -229,6 +230,7 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
     if (status !== 'complete' || !runId) {
       setSummaryReady(false);
       setSummaryProgress(0);
+      summaryLoggedRef.current = new Set();
       return;
     }
 
@@ -242,6 +244,11 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
     source.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        const logOnce = (id: string, message: string) => {
+          if (summaryLoggedRef.current.has(id)) return;
+          summaryLoggedRef.current.add(id);
+          setLogs((prev) => `${prev}\n[SUMMARY] ${message}`);
+        };
         if (data.type === 'start') {
           totalChunks = Number(data.totalChunks) || 0;
           setSummaryProgress(0);
@@ -252,6 +259,53 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
           setSummaryReady(true);
           source.close();
           return;
+        }
+        if (data.type === 'metrics') {
+          logOnce('metrics', 'Accuracy / RMSE / MAE / R²');
+        }
+        if (data.type === 'plots') {
+          logOnce('plots', 'Plots');
+        }
+        if (data.type === 'config') {
+          logOnce('config', 'Training Config');
+        }
+        if (data.type === 'meta') {
+          logOnce('meta', 'Summary Metadata');
+        }
+        if (data.type === 'report' && data.path) {
+          const path = String(data.path);
+          if (path.startsWith('dataset.final_cgpa_hist')) {
+            logOnce('dataset.final_cgpa_hist', 'Final CGPA Histogram');
+          } else if (path.startsWith('dataset.next_sem_cgpa_hist')) {
+            logOnce('dataset.next_sem_cgpa_hist', 'Next-Sem CGPA Histogram');
+          } else if (path === 'dataset.stats') {
+            logOnce('dataset.stats', 'Dataset Overview');
+          } else if (path.endsWith('.metrics.models')) {
+            const task = path.split('.')[1] || 'task';
+            logOnce(path, `Model Metrics (${task})`);
+          } else if (path.includes('.metrics.predictions.')) {
+            const parts = path.split('.');
+            const task = parts[1] || 'task';
+            const model = parts[4] || 'model';
+            logOnce(path, `Predicted vs Actual (${task}, ${model})`);
+          } else if (path.includes('.metrics.featureImportance.')) {
+            const parts = path.split('.');
+            const task = parts[1] || 'task';
+            const model = parts[4] || 'model';
+            logOnce(path, `Feature Importance (${task}, ${model})`);
+          } else if (path.includes('.metrics.learningCurves.')) {
+            const parts = path.split('.');
+            const task = parts[1] || 'task';
+            const model = parts[4] || 'model';
+            logOnce(path, `Learning Curve (${task}, ${model})`);
+          } else if (path.endsWith('.residualSamples')) {
+            const task = path.split('.')[1] || 'task';
+            logOnce(path, `Residuals (${task})`);
+          } else if (path === 'classification.summary') {
+            logOnce('classification.summary', 'Classification Summary');
+          } else if (path === 'classification.confusion_matrix') {
+            logOnce('classification.confusion_matrix', 'Confusion Matrix');
+          }
         }
         if (totalChunks > 0 && Number.isFinite(data.index)) {
           const progress = Math.min(1, Math.max(0, data.index / totalChunks));
@@ -291,17 +345,6 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
       {status === 'error' && (
         <div className="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
           Log stream disconnected. Verify the SSE endpoint and auth token.
-        </div>
-      )}
-      {status === 'complete' && !summaryReady && (
-        <div className="border-b border-border/40 bg-muted/30 px-4 py-2">
-          <div className="text-xs text-muted-foreground mb-2">Preparing charts…</div>
-          <div className="h-2 w-full overflow-hidden rounded-full bg-muted/50">
-            <div
-              className="h-full animate-pulse rounded-full bg-primary/70 transition-all"
-              style={{ width: `${Math.max(10, Math.round(summaryProgress * 100))}%` }}
-            />
-          </div>
         </div>
       )}
       <div className="border-b border-border/40 px-4 py-2 text-[11px] text-muted-foreground">
