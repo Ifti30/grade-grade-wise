@@ -29,22 +29,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // Check if user is logged in
-    const token = localStorage.getItem('token');
-    if (token) {
-      api.me()
-        .then((data) => {
-          setUser(data.user);
-          setOrg(data.org);
-        })
-        .catch(() => {
-          localStorage.removeItem('token');
-        })
-        .finally(() => {
-          setLoading(false);
-        });
-    } else {
-      setLoading(false);
-    }
+    const init = async () => {
+      const token = await api.getValidToken();
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+      try {
+        const data = await api.me();
+        setUser(data.user);
+        setOrg(data.org);
+      } catch {
+        api.clearToken();
+      } finally {
+        setLoading(false);
+      }
+    };
+    init();
   }, []);
 
   const signin = async (email: string, password: string) => {
@@ -60,7 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signout = () => {
-    api.clearToken();
+    api.signout().catch(() => {});
     setUser(null);
     setOrg(null);
   };

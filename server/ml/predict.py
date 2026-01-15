@@ -65,6 +65,91 @@ def compute_cgpa(semesters, sem_nums, upto, GP, default_credit_hours=None):
         return None
     return float(total_points / total_hours)
 
+def compute_course_stats(sem, GP, pass_gpa_min):
+    if not isinstance(sem, dict):
+        return 0, 0, 0
+    max_gpa = float(max(GP.values())) if GP else 4.0
+    attempted = 0
+    passed = 0
+    failed = 0
+    for k, g in sem.items():
+        if k in ("attendancePercentage", "creditHours", "courses"):
+            continue
+        value = None
+        if g in GP:
+            value = GP[g]
+        elif isinstance(g, (int, float)):
+            value = float(g)
+            if np.isnan(value) or np.isinf(value):
+                continue
+            value = max(0.0, min(max_gpa, value))
+        if value is None:
+            continue
+        attempted += 1
+        if value >= pass_gpa_min:
+            passed += 1
+        else:
+            failed += 1
+    return attempted, passed, failed
+
+def compute_linear_slope(values):
+    if not values or len(values) < 2:
+        return 0.0
+    x = np.arange(len(values), dtype=float)
+    y = np.array(values, dtype=float)
+    denom = np.var(x)
+    if denom == 0:
+        return 0.0
+    return float(np.cov(x, y, bias=True)[0, 1] / denom)
+
+def compute_acceleration(values):
+    if not values or len(values) < 3:
+        return 0.0
+    diffs = np.diff(values)
+    accel = np.diff(diffs)
+    return float(np.mean(accel)) if len(accel) else 0.0
+
+def compute_volatility(values):
+    if not values:
+        return 0.0
+    return float(np.std(values))
+
+def summarize_temporal_features(semesters, GP, sem_nums, upto, pass_gpa_min):
+    series_gpa = []
+    series_att = []
+    attempted_total = 0
+    passed_total = 0
+    failed_total = 0
+    for sem_no in sem_nums[:upto]:
+        sem = semesters.get(str(sem_no))
+        if not isinstance(sem, dict):
+            continue
+        gpa = semester_gpa(sem, GP)
+        if gpa is not None:
+            series_gpa.append(gpa)
+        att = sem.get("attendancePercentage")
+        if isinstance(att, (int, float)):
+            series_att.append(float(att))
+        attempted, passed, failed = compute_course_stats(sem, GP, pass_gpa_min)
+        attempted_total += attempted
+        passed_total += passed
+        failed_total += failed
+    gpa_slope = compute_linear_slope(series_gpa)
+    gpa_accel = compute_acceleration(series_gpa)
+    gpa_vol = compute_volatility(series_gpa)
+    att_slope = compute_linear_slope(series_att)
+    att_delta = float(series_att[-1] - series_att[0]) if len(series_att) >= 2 else 0.0
+    pass_ratio = (passed_total / attempted_total) if attempted_total > 0 else 0.0
+    return {
+        "gpa_slope": gpa_slope,
+        "gpa_accel": gpa_accel,
+        "gpa_volatility": gpa_vol,
+        "att_slope": att_slope,
+        "att_delta": att_delta,
+        "pass_ratio": pass_ratio,
+        "failed_count": float(failed_total)
+    }
+
 def build_features_for_final(student, GP, feature_order, pass_gpa_min=2.0, default_credit_hours=None):
     """Build features for final CGPA prediction using semesters up to n-1."""
     semesters = student.get("semesters", {})
@@ -369,12 +454,20 @@ def main():
             with torch.no_grad():
                 preds_next["MLP"] = float(mlp_next_model(torch.tensor(Xn_s, dtype=torch.float32)).numpy().reshape(-1)[0])
 
-    # Ensemble mean across available models
-    ens_final = float(np.mean([v for v in preds_final.values()])) if preds_final else None
-    ens_next  = float(np.mean([v for v in preds_next.values()])) if preds_next else None
-
     def clamp_gpa(value):
-        return max(0.0, min(max_gpa, float(value)))
+        try:
+            val = float(value)
+        except Exception:
+            return None
+        if np.isnan(val) or np.isinf(val):
+            return None
+        return max(0.0, min(max_gpa, val))
+
+    # Ensemble mean across available models
+    preds_final = {k: clamp_gpa(v) for k, v in preds_final.items()}
+    preds_next = {k: clamp_gpa(v) for k, v in preds_next.items()}
+    ens_final = float(np.mean([v for v in preds_final.values() if v is not None])) if preds_final else None
+    ens_next  = float(np.mean([v for v in preds_next.values() if v is not None])) if preds_next else None
 
     load_adjusted = None
     course_load = None
@@ -543,87 +636,3 @@ if __name__ == "__main__":
         print(f"[ERROR] {e}", file=sys.stderr)
         print("__RESULT__" + json.dumps({"status":"error","error":str(e)}))
         sys.exit(1)
-def compute_course_stats(sem, GP, pass_gpa_min):
-    if not isinstance(sem, dict):
-        return 0, 0, 0
-    max_gpa = float(max(GP.values())) if GP else 4.0
-    attempted = 0
-    passed = 0
-    failed = 0
-    for k, g in sem.items():
-        if k in ("attendancePercentage", "creditHours", "courses"):
-            continue
-        value = None
-        if g in GP:
-            value = GP[g]
-        elif isinstance(g, (int, float)):
-            value = float(g)
-            if np.isnan(value) or np.isinf(value):
-                continue
-            value = max(0.0, min(max_gpa, value))
-        if value is None:
-            continue
-        attempted += 1
-        if value >= pass_gpa_min:
-            passed += 1
-        else:
-            failed += 1
-    return attempted, passed, failed
-
-def compute_linear_slope(values):
-    if not values or len(values) < 2:
-        return 0.0
-    x = np.arange(len(values), dtype=float)
-    y = np.array(values, dtype=float)
-    denom = np.var(x)
-    if denom == 0:
-        return 0.0
-    return float(np.cov(x, y, bias=True)[0, 1] / denom)
-
-def compute_acceleration(values):
-    if not values or len(values) < 3:
-        return 0.0
-    diffs = np.diff(values)
-    accel = np.diff(diffs)
-    return float(np.mean(accel)) if len(accel) else 0.0
-
-def compute_volatility(values):
-    if not values:
-        return 0.0
-    return float(np.std(values))
-
-def summarize_temporal_features(semesters, GP, sem_nums, upto, pass_gpa_min):
-    series_gpa = []
-    series_att = []
-    attempted_total = 0
-    passed_total = 0
-    failed_total = 0
-    for sem_no in sem_nums[:upto]:
-        sem = semesters.get(str(sem_no))
-        if not isinstance(sem, dict):
-            continue
-        gpa = semester_gpa(sem, GP)
-        if gpa is not None:
-            series_gpa.append(gpa)
-        att = sem.get("attendancePercentage")
-        if isinstance(att, (int, float)):
-            series_att.append(float(att))
-        attempted, passed, failed = compute_course_stats(sem, GP, pass_gpa_min)
-        attempted_total += attempted
-        passed_total += passed
-        failed_total += failed
-    gpa_slope = compute_linear_slope(series_gpa)
-    gpa_accel = compute_acceleration(series_gpa)
-    gpa_vol = compute_volatility(series_gpa)
-    att_slope = compute_linear_slope(series_att)
-    att_delta = float(series_att[-1] - series_att[0]) if len(series_att) >= 2 else 0.0
-    pass_ratio = (passed_total / attempted_total) if attempted_total > 0 else 0.0
-    return {
-        "gpa_slope": gpa_slope,
-        "gpa_accel": gpa_accel,
-        "gpa_volatility": gpa_vol,
-        "att_slope": att_slope,
-        "att_delta": att_delta,
-        "pass_ratio": pass_ratio,
-        "failed_count": float(failed_total)
-    }

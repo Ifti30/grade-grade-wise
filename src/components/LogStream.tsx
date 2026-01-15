@@ -17,6 +17,7 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
   const [streamToken, setStreamToken] = useState(token);
   const [summaryReady, setSummaryReady] = useState(false);
   const [summaryProgress, setSummaryProgress] = useState(0);
+  const [summaryLogs, setSummaryLogs] = useState<string[]>([]);
   const scrollRef = useRef<HTMLPreElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const lastEventIdRef = useRef(0);
@@ -121,6 +122,10 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
         return;
       }
 
+      if (trimmedStart.startsWith('[SUMMARY]')) {
+        return;
+      }
+
       if (trimmedStart.startsWith('epoch=') || trimmedStart.startsWith('valLoss=')) {
         epochBuffer.push(trimmedStart);
         return;
@@ -143,7 +148,8 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
   useEffect(() => {
     let cancelled = false;
     let eventSource: EventSource | null = null;
-    let didRetry = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryDelay = 2000;
     lastEventIdRef.current = 0;
     setLogs('');
 
@@ -181,30 +187,27 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
       };
 
       eventSource.onerror = async () => {
-        if (!didRetry) {
-          didRetry = true;
-          eventSource?.close();
-          const refreshed = await api.refreshToken();
-          if (!cancelled && refreshed) {
-            const updatedToken = localStorage.getItem('token') || '';
-            setStreamToken(updatedToken);
-            openStream(updatedToken);
-            return;
-          }
-        }
-        setStatus('error');
         eventSource?.close();
+        if (cancelled) return;
+        const updatedToken = await api.getValidToken();
+        if (!updatedToken) {
+          setStatus('error');
+          return;
+        }
+        setStreamToken(updatedToken);
+        retryTimer = setTimeout(() => {
+          if (cancelled) return;
+          openStream(updatedToken);
+          retryDelay = Math.min(retryDelay * 1.5, 30000);
+        }, retryDelay);
       };
     };
 
     const init = async () => {
       setStatus('connecting');
-      let nextToken = streamToken;
-      if (!nextToken) {
-        const refreshed = await api.refreshToken();
-        nextToken = refreshed ? (localStorage.getItem('token') || '') : '';
-      }
+      const nextToken = await api.getValidToken();
       if (!cancelled && nextToken) {
+        setStreamToken(nextToken);
         openStream(nextToken);
       } else if (!cancelled) {
         setStatus('error');
@@ -216,6 +219,9 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
     return () => {
       cancelled = true;
       eventSource?.close();
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+      }
     };
   }, [url, onComplete, streamToken]);
 
@@ -224,107 +230,122 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
     if (containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [logs]);
+  }, [logs, summaryLogs]);
 
   useEffect(() => {
     if (status !== 'complete' || !runId) {
       setSummaryReady(false);
       setSummaryProgress(0);
+      setSummaryLogs([]);
       summaryLoggedRef.current = new Set();
       return;
     }
 
     let cancelled = false;
     const key = `summaryReady:${runId}`;
-    const authToken = localStorage.getItem('token') || token;
-    const url = `${api.getModelSummaryStreamUrl(runId)}&token=${encodeURIComponent(authToken)}`;
-    const source = new EventSource(url);
+    let source: EventSource | null = null;
     let totalChunks = 0;
+    setLogs((prev) =>
+      prev
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('[SUMMARY]'))
+        .join('\n')
+    );
 
-    source.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        const logOnce = (id: string, message: string) => {
-          if (summaryLoggedRef.current.has(id)) return;
-          summaryLoggedRef.current.add(id);
-          setLogs((prev) => `${prev}\n[SUMMARY] ${message}`);
-        };
-        if (data.type === 'start') {
-          totalChunks = Number(data.totalChunks) || 0;
-          setSummaryProgress(0);
-        }
-        if (data.type === 'complete') {
-          setSummaryProgress(1);
-          localStorage.setItem(key, 'true');
-          setSummaryReady(true);
-          source.close();
-          return;
-        }
-        if (data.type === 'metrics') {
-          logOnce('metrics', 'Accuracy / RMSE / MAE / R²');
-        }
-        if (data.type === 'plots') {
-          logOnce('plots', 'Plots');
-        }
-        if (data.type === 'config') {
-          logOnce('config', 'Training Config');
-        }
-        if (data.type === 'meta') {
-          logOnce('meta', 'Summary Metadata');
-        }
-        if (data.type === 'report' && data.path) {
-          const path = String(data.path);
-          if (path.startsWith('dataset.final_cgpa_hist')) {
-            logOnce('dataset.final_cgpa_hist', 'Final CGPA Histogram');
-          } else if (path.startsWith('dataset.next_sem_cgpa_hist')) {
-            logOnce('dataset.next_sem_cgpa_hist', 'Next-Sem CGPA Histogram');
-          } else if (path === 'dataset.stats') {
-            logOnce('dataset.stats', 'Dataset Overview');
-          } else if (path.endsWith('.metrics.models')) {
-            const task = path.split('.')[1] || 'task';
-            logOnce(path, `Model Metrics (${task})`);
-          } else if (path.includes('.metrics.predictions.')) {
-            const parts = path.split('.');
-            const task = parts[1] || 'task';
-            const model = parts[4] || 'model';
-            logOnce(path, `Predicted vs Actual (${task}, ${model})`);
-          } else if (path.includes('.metrics.featureImportance.')) {
-            const parts = path.split('.');
-            const task = parts[1] || 'task';
-            const model = parts[4] || 'model';
-            logOnce(path, `Feature Importance (${task}, ${model})`);
-          } else if (path.includes('.metrics.learningCurves.')) {
-            const parts = path.split('.');
-            const task = parts[1] || 'task';
-            const model = parts[4] || 'model';
-            logOnce(path, `Learning Curve (${task}, ${model})`);
-          } else if (path.endsWith('.residualSamples')) {
-            const task = path.split('.')[1] || 'task';
-            logOnce(path, `Residuals (${task})`);
-          } else if (path === 'classification.summary') {
-            logOnce('classification.summary', 'Classification Summary');
-          } else if (path === 'classification.confusion_matrix') {
-            logOnce('classification.confusion_matrix', 'Confusion Matrix');
+    const openSummaryStream = async () => {
+      const authToken = await api.getValidToken();
+      if (!authToken || cancelled) return;
+      const url = `${api.getModelSummaryStreamUrl(runId)}&token=${encodeURIComponent(authToken)}`;
+      source = new EventSource(url);
+
+      source.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          const logOnce = (id: string, message: string) => {
+            if (summaryLoggedRef.current.has(id)) return;
+            summaryLoggedRef.current.add(id);
+            setSummaryLogs((prev) => [...prev, message]);
+          };
+          if (data.type === 'start') {
+            totalChunks = Number(data.totalChunks) || 0;
+            setSummaryProgress(0);
+            logOnce('summary.start', 'Summary stream started');
           }
+          if (data.type === 'complete') {
+            setSummaryProgress(1);
+            localStorage.setItem(key, 'true');
+            setSummaryReady(true);
+            source?.close();
+            return;
+          }
+          if (data.type === 'metrics') {
+            logOnce('metrics', 'Accuracy / RMSE / MAE / R²');
+          }
+          if (data.type === 'plots') {
+            logOnce('plots', 'Plots');
+          }
+          if (data.type === 'config') {
+            logOnce('config', 'Training Config');
+          }
+          if (data.type === 'meta') {
+            logOnce('meta', 'Summary Metadata');
+          }
+          if (data.type === 'report' && data.path) {
+            const path = String(data.path);
+            if (path.startsWith('dataset.final_cgpa_hist')) {
+              logOnce('dataset.final_cgpa_hist', 'Final CGPA Histogram');
+            } else if (path.startsWith('dataset.next_sem_cgpa_hist')) {
+              logOnce('dataset.next_sem_cgpa_hist', 'Next-Sem CGPA Histogram');
+            } else if (path === 'dataset.stats') {
+              logOnce('dataset.stats', 'Dataset Overview');
+            } else if (path.endsWith('.metrics.models')) {
+              const task = path.split('.')[1] || 'task';
+              logOnce(path, `Model Metrics (${task})`);
+            } else if (path.includes('.metrics.predictions.')) {
+              const parts = path.split('.');
+              const task = parts[1] || 'task';
+              const model = parts[4] || 'model';
+              logOnce(path, `Predicted vs Actual (${task}, ${model})`);
+            } else if (path.includes('.metrics.featureImportance.')) {
+              const parts = path.split('.');
+              const task = parts[1] || 'task';
+              const model = parts[4] || 'model';
+              logOnce(path, `Feature Importance (${task}, ${model})`);
+            } else if (path.includes('.metrics.learningCurves.')) {
+              const parts = path.split('.');
+              const task = parts[1] || 'task';
+              const model = parts[4] || 'model';
+              logOnce(path, `Learning Curve (${task}, ${model})`);
+            } else if (path.endsWith('.residualSamples')) {
+              const task = path.split('.')[1] || 'task';
+              logOnce(path, `Residuals (${task})`);
+            } else if (path === 'classification.summary') {
+              logOnce('classification.summary', 'Classification Summary');
+            } else if (path === 'classification.confusion_matrix') {
+              logOnce('classification.confusion_matrix', 'Confusion Matrix');
+            }
+          }
+          if (totalChunks > 0 && Number.isFinite(data.index)) {
+            const progress = Math.min(1, Math.max(0, data.index / totalChunks));
+            setSummaryProgress(progress);
+          }
+        } catch (error) {
+          console.error('Failed to parse summary stream:', error);
         }
-        if (totalChunks > 0 && Number.isFinite(data.index)) {
-          const progress = Math.min(1, Math.max(0, data.index / totalChunks));
-          setSummaryProgress(progress);
+      };
+
+      source.onerror = () => {
+        if (!cancelled) {
+          source?.close();
         }
-      } catch (error) {
-        console.error('Failed to parse summary stream:', error);
-      }
+      };
     };
 
-    source.onerror = () => {
-      if (!cancelled) {
-        source.close();
-      }
-    };
+    openSummaryStream();
 
     return () => {
       cancelled = true;
-      source.close();
+      source?.close();
     };
   }, [status, runId, token]);
 
@@ -357,6 +378,18 @@ export function LogStream({ url, token, onComplete, runId }: LogStreamProps) {
             ? renderLogs()
             : <div className="text-muted-foreground">Waiting for logs...</div>
           }
+          {summaryLogs.length > 0 && (
+            <div className="pt-4 border-t border-border/40 space-y-1">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                Summary Stream {summaryReady ? '(ready)' : summaryProgress > 0 ? `(${Math.round(summaryProgress * 100)}%)` : ''}
+              </div>
+              {summaryLogs.map((entry, idx) => (
+                <div key={`summary-${idx}`} className="text-foreground/80">
+                  [SUMMARY] {entry}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </Card>

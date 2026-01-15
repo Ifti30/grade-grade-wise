@@ -229,6 +229,7 @@ router.get('/train/:runId/logs', async (req, res) => {
           res.write(`id: ${nextOffset}\n`);
           res.write(`data: ${JSON.stringify({ content: chunk })}\n\n`);
           lastSize = nextOffset;
+          attempts = 0;
         }
 
         // Check if training is complete

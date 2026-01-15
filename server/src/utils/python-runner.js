@@ -146,10 +146,29 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
     const model = progress?.model ? `model=${progress.model}` : null;
     const label = progress?.label ? `label=${progress.label}` : null;
     const total = progress?.totalEpochs ? `total=${progress.totalEpochs}` : null;
+    const evaluated = progress?.evaluated != null ? `evaluated=${progress.evaluated}` : null;
+    const totalCandidates = progress?.totalCandidates != null ? `total=${progress.totalCandidates}` : null;
     const samples = progress?.samples ? `samples=${progress.samples}` : null;
     const samplesFinal = progress?.samplesFinal ? `final=${progress.samplesFinal}` : null;
     const samplesNext = progress?.samplesNext ? `next=${progress.samplesNext}` : null;
-    const parts = [model, label, total, samples, samplesFinal, samplesNext].filter(Boolean);
+    const seconds = progress?.seconds != null ? `seconds=${progress.seconds}` : null;
+    const elapsed = progress?.elapsedSeconds != null ? `elapsed=${progress.elapsedSeconds}` : null;
+    const cpu = progress?.cpuSeconds != null ? `cpu=${progress.cpuSeconds}` : null;
+    const rss = progress?.rssKb != null ? `rssKb=${progress.rssKb}` : null;
+    const parts = [
+      model,
+      label,
+      total,
+      evaluated,
+      totalCandidates,
+      samples,
+      samplesFinal,
+      samplesNext,
+      seconds,
+      elapsed,
+      cpu,
+      rss
+    ].filter(Boolean);
     return `[PROGRESS] phase=${phase}${parts.length ? ' ' + parts.join(' ') : ''}`;
   }
 
@@ -204,6 +223,7 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
 
   let resultJson = null;
   let stderr = '';
+  let stdoutBuffer = '';
 
   const catcher = makeResultCatcher({
     onResult: (payload) => {
@@ -245,12 +265,14 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
       console.log('[train] result received');
     }
     catcher.write(text);
-    const cleaned = text
-      .split('\n')
-      .filter((line) => line && !line.startsWith('__PROGRESS__') && !line.startsWith('__RESULT__'))
-      .join('\n');
-    if (!cleaned) return;
-    appendLog(cleaned + '\n').catch((err) => {
+    stdoutBuffer += text;
+    const lines = stdoutBuffer.split('\n');
+    stdoutBuffer = lines.pop() ?? '';
+    const cleanedLines = lines.filter(
+      (line) => line && !line.startsWith('__PROGRESS__') && !line.startsWith('__RESULT__')
+    );
+    if (!cleanedLines.length) return;
+    appendLog(cleanedLines.join('\n') + '\n').catch((err) => {
       console.error('Failed to write stdout to log:', err);
     });
   });
@@ -281,6 +303,18 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
       }
 
       console.log('[train] result', resultJson);
+
+      if (stdoutBuffer) {
+        const trimmed = stdoutBuffer.trimEnd();
+        if (trimmed && !trimmed.startsWith('__PROGRESS__') && !trimmed.startsWith('__RESULT__')) {
+          try {
+            await appendLog(trimmed + '\n');
+          } catch (writeErr) {
+            console.error('Failed to write buffered stdout to log:', writeErr);
+          }
+        }
+        stdoutBuffer = '';
+      }
 
       if (!resultJson || resultJson.status !== 'ok') {
         const exitNote = code === null && signal

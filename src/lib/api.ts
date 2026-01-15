@@ -5,6 +5,25 @@ const API_BASE = API_URL.replace(/\/api$/, '');
 
 export const getApiBase = () => API_BASE;
 
+const decodeJwtPayload = (token: string) => {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+  const padded = payload + '='.repeat((4 - (payload.length % 4)) % 4);
+  try {
+    return JSON.parse(atob(padded));
+  } catch {
+    return null;
+  }
+};
+
+const isTokenExpired = (token: string, skewSeconds = 60) => {
+  const payload = decodeJwtPayload(token);
+  if (!payload || typeof payload.exp !== 'number') return false;
+  const expMs = payload.exp * 1000;
+  return Date.now() + skewSeconds * 1000 >= expMs;
+};
+
 export const buildStaticUrl = (path?: string | null) => {
   if (!path) return null;
   if (path.startsWith('http://') || path.startsWith('https://')) {
@@ -46,6 +65,16 @@ class ApiClient {
   clearToken() {
     this.token = null;
     localStorage.removeItem('token');
+  }
+
+  async getValidToken() {
+    const token = this.token || localStorage.getItem('token');
+    if (token && !isTokenExpired(token)) {
+      this.token = token;
+      return token;
+    }
+    const refreshed = await this.refreshToken();
+    return refreshed ? this.token : null;
   }
 
   private async fetch(endpoint: string, options: RequestInit = {}) {
@@ -110,7 +139,12 @@ class ApiClient {
         method: 'POST',
         credentials: 'include',
       });
-      if (!response.ok) return false;
+      if (!response.ok) {
+        if (response.status === 401) {
+          this.clearToken();
+        }
+        return false;
+      }
       const data = await response.json();
       if (data?.token) {
         this.setToken(data.token);
@@ -119,6 +153,19 @@ class ApiClient {
       return false;
     } catch {
       return false;
+    }
+  }
+
+  async signout() {
+    try {
+      await fetch(`${API_URL}/auth/signout`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } catch {
+      // best-effort; still clear local state
+    } finally {
+      this.clearToken();
     }
   }
 

@@ -16,6 +16,7 @@ import DashboardSummary from "./pages/DashboardSummary";
 import DashboardPredict from "./pages/DashboardPredict";
 import DashboardHistory from "./pages/DashboardHistory";
 import DashboardRetrain from "./pages/DashboardRetrain";
+import Diagram from "./pages/Diagram";
 import { Layout } from "@/components/Layout";
 
 const queryClient = new QueryClient();
@@ -80,6 +81,7 @@ const App = () => (
             <Route path="/dashboard/predict" element={<ProtectedRoute><DashboardPredict /></ProtectedRoute>} />
             <Route path="/dashboard/history" element={<ProtectedRoute><DashboardHistory /></ProtectedRoute>} />
             <Route path="/dashboard/retrain" element={<ProtectedRoute><Layout><DashboardRetrain /></Layout></ProtectedRoute>} />
+            <Route path="/diagram" element={<ProtectedRoute><Diagram /></ProtectedRoute>} />
             
             {/* Catch-all */}
             <Route path="*" element={<NotFound />} />

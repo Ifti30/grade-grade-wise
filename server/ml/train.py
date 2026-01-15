@@ -9,7 +9,7 @@ Fixed training script:
 - Writes metadata.json and prints __RESULT__ JSON used by the Node backend.
 """
 
-import argparse, os, sys, json, datetime, math
+import argparse, os, sys, json, datetime, math, time, threading, resource
 from typing import Optional
 from pathlib import Path
 
@@ -882,23 +882,23 @@ def main():
         return str(v) if v is not None else str(default)
 
     RANDOM_SEED = int(cfg.get("RANDOM_SEED", 42))
-    THREADS     = int(clamp("THREADS", 4))
+    THREADS     = int(clamp("THREADS", 6))
     TEST_SIZE   = float(clamp("TEST_SIZE", 0.2))
     DT_ENABLE   = parse_bool("DT_ENABLE", True)
     DT_MAX_DEPTH = parse_depth("DT_MAX_DEPTH", 0)
     DT_MIN_SAMPLES_LEAF = clamp_int("DT_MIN_SAMPLES_LEAF", 1)
     RF_ENABLE   = parse_bool("RF_ENABLE", True)
-    RF_TREES    = int(clamp("RF_TREES", 400))
+    RF_TREES    = int(clamp("RF_TREES", 500))
     RF_MAX_DEPTH = parse_depth("RF_MAX_DEPTH", 0)
     RF_MIN_SAMPLES_LEAF = clamp_int("RF_MIN_SAMPLES_LEAF", 1)
     LGBM_ENABLE = parse_bool("LGBM_ENABLE", True)
-    LGBM_N_EST  = int(clamp("LGBM_N_ESTIMATORS", 2000))
+    LGBM_N_EST  = int(clamp("LGBM_N_ESTIMATORS", 1200))
     LGBM_REG_ALPHA = float(clamp("LGBM_REG_ALPHA", 0.0))
     LGBM_REG_LAMBDA = float(clamp("LGBM_REG_LAMBDA", 0.0))
     MLP_ENABLE  = parse_bool("MLP_ENABLE", True)
-    MLP_HIDDEN  = int(clamp("MLP_HIDDEN", 64))
-    MLP_EPOCHS  = int(clamp("MLP_EPOCHS", 300))
-    MLP_PATIENCE= int(clamp("MLP_PATIENCE", 40))
+    MLP_HIDDEN  = int(clamp("MLP_HIDDEN", 96))
+    MLP_EPOCHS  = int(clamp("MLP_EPOCHS", 200))
+    MLP_PATIENCE= int(clamp("MLP_PATIENCE", 30))
     SVR_ENABLE  = parse_bool("SVR_ENABLE", True)
     SVR_TUNE    = parse_bool("SVR_TUNE", False)
     SVR_C       = float(clamp("SVR_C", 10.0))
@@ -906,6 +906,8 @@ def main():
     SVR_C_GRID = parse_num_list(cfg.get("SVR_C_GRID"), [0.1, 1.0, 10.0, 30.0, 100.0, 300.0, 1000.0])
     SVR_EPSILON_GRID = parse_num_list(cfg.get("SVR_EPSILON_GRID"), [0.001, 0.01, 0.05, 0.1, 0.2])
     SVR_GAMMA_GRID = cfg.get("SVR_GAMMA_GRID", ["scale", "auto", 0.001, 0.005, 0.01, 0.1, 1.0])
+    SVR_MAX_SAMPLES = int(clamp("SVR_MAX_SAMPLES", 10000))
+    SVR_LINEAR_MAX_ITER = int(clamp("SVR_LINEAR_MAX_ITER", 5000))
     RISK_HIGH_MAX = float(cfg.get("RISK_HIGH_MAX", 3.30))
     RISK_MED_MAX  = float(cfg.get("RISK_MED_MAX", 3.50))
     MISSING_DATA_POLICY = parse_str("MISSING_DATA_POLICY", "drop").lower()
@@ -1139,9 +1141,10 @@ def main():
     # Models
     from sklearn.tree import DecisionTreeRegressor
     from sklearn.ensemble import RandomForestRegressor
-    from sklearn.svm import SVR
+    from sklearn.svm import SVR, LinearSVR
     from sklearn.preprocessing import StandardScaler
     from sklearn.pipeline import make_pipeline
+    from sklearn.base import clone
     import lightgbm as lgb
     from sklearn.metrics import (
         r2_score,
@@ -1254,17 +1257,24 @@ def main():
         return model, scaler, history, resumed
 
     # Evaluate
-    def eval_model(m, Xtr, ytr, Xte, yte, name):
+    def eval_model(m, Xtr, ytr, Xte, yte, name, label):
+        emit_progress(
+            phase="model_eval_start",
+            model=name,
+            label=label
+        )
         yhat_tr = m.predict(Xtr); yhat_te = m.predict(Xte)
         if isinstance(yhat_tr, (list, tuple)): yhat_tr = np.array(yhat_tr)
         if isinstance(yhat_te, (list, tuple)): yhat_te = np.array(yhat_te)
+        yhat_tr = np.clip(yhat_tr, 0.0, max_gpa)
+        yhat_te = np.clip(yhat_te, 0.0, max_gpa)
         r2_tr = r2_score(ytr, yhat_tr); r2_te = r2_score(yte, yhat_te)
         # Older sklearn may not support squared=False; take sqrt manually
         rmse_tr = math.sqrt(mean_squared_error(ytr, yhat_tr))
         rmse_te = math.sqrt(mean_squared_error(yte, yhat_te))
         mae_tr = mean_absolute_error(ytr, yhat_tr)
         mae_te = mean_absolute_error(yte, yhat_te)
-        return {
+        result = {
             "name": name,
             "r2_tr": r2_tr,
             "r2_te": r2_te,
@@ -1274,19 +1284,35 @@ def main():
             "mae_te": mae_te,
             "yhat_te": yhat_te
         }
+        emit_progress(
+            phase="model_eval_end",
+            model=name,
+            label=label,
+            rmse=rmse_te,
+            r2=r2_te,
+            mae=mae_te
+        )
+        return result
 
-    def eval_mlp(model, scaler, Xtr, ytr, Xte, yte):
+    def eval_mlp(model, scaler, Xtr, ytr, Xte, yte, label):
+        emit_progress(
+            phase="model_eval_start",
+            model="MLP",
+            label=label
+        )
         Xtr_s = scaler.transform(Xtr); Xte_s = scaler.transform(Xte)
         import torch
         with torch.no_grad():
             yhat_tr = model(torch.tensor(Xtr_s, dtype=torch.float32)).numpy().reshape(-1)
             yhat_te = model(torch.tensor(Xte_s, dtype=torch.float32)).numpy().reshape(-1)
+        yhat_tr = np.clip(yhat_tr, 0.0, max_gpa)
+        yhat_te = np.clip(yhat_te, 0.0, max_gpa)
         r2_tr = r2_score(ytr, yhat_tr); r2_te = r2_score(yte, yhat_te)
         rmse_tr = math.sqrt(mean_squared_error(ytr, yhat_tr))
         rmse_te = math.sqrt(mean_squared_error(yte, yhat_te))
         mae_tr = mean_absolute_error(ytr, yhat_tr)
         mae_te = mean_absolute_error(yte, yhat_te)
-        return {
+        result = {
             "name": "MLP",
             "r2_tr": r2_tr,
             "r2_te": r2_te,
@@ -1296,6 +1322,69 @@ def main():
             "mae_te": mae_te,
             "yhat_te": yhat_te
         }
+        emit_progress(
+            phase="model_eval_end",
+            model="MLP",
+            label=label,
+            rmse=rmse_te,
+            r2=r2_te,
+            mae=mae_te
+        )
+        return result
+
+    last_lc_signature = {"value": None}
+
+    def format_lc_signature(model_name, label, svr_kernel, svr_train_samples):
+        base = {
+            "model": model_name,
+            "label": label,
+            "DT_MAX_DEPTH": DT_MAX_DEPTH,
+            "DT_MIN_SAMPLES_LEAF": DT_MIN_SAMPLES_LEAF,
+            "RF_TREES": RF_TREES,
+            "RF_MAX_DEPTH": RF_MAX_DEPTH,
+            "RF_MIN_SAMPLES_LEAF": RF_MIN_SAMPLES_LEAF,
+            "LGBM_N_EST": LGBM_N_EST,
+            "LGBM_REG_ALPHA": LGBM_REG_ALPHA,
+            "LGBM_REG_LAMBDA": LGBM_REG_LAMBDA,
+            "MLP_HIDDEN": MLP_HIDDEN,
+            "MLP_EPOCHS": MLP_EPOCHS,
+            "MLP_PATIENCE": MLP_PATIENCE
+        }
+        if model_name == "SVR":
+            base.update({
+                "SVR_KERNEL": svr_kernel,
+                "SVR_C": SVR_C,
+                "SVR_EPSILON": SVR_EPSILON,
+                "SVR_MAX_SAMPLES": SVR_MAX_SAMPLES,
+                "SVR_LINEAR_MAX_ITER": SVR_LINEAR_MAX_ITER,
+                "SVR_TRAIN_SAMPLES": svr_train_samples
+            })
+        return json.dumps(base, sort_keys=True)
+
+    def emit_learning_curve_rows(model_name, sizes, rows, label, svr_kernel, svr_train_samples):
+        log_path = out_dir / "learning_curve.log"
+        signature = format_lc_signature(model_name, label, svr_kernel, svr_train_samples)
+        if signature != last_lc_signature["value"]:
+            header = f"----- CONFIG CHANGE {signature} -----"
+            try:
+                with open(log_path, "a") as log_file:
+                    log_file.write(header + "\n")
+            except Exception:
+                pass
+            last_lc_signature["value"] = signature
+        for row in rows:
+            line = (
+                "[LEARNING_CURVE] "
+                f"model={model_name} label={label} "
+                f"samples={row['samples']} rmse={row['rmse']:.4f} "
+                f"mae={row['mae']:.4f} r2={row['r2']:.4f}"
+            )
+            print(line)
+            try:
+                with open(log_path, "a") as log_file:
+                    log_file.write(line + "\n")
+            except Exception:
+                pass
 
     class MLPWrapper:
         def __init__(self, model, scaler):
@@ -1406,16 +1495,36 @@ def main():
             print(f"[WARN] feature importance failed for {name}: {e}")
             return []
 
-    def compute_feature_importance_map(models, mlp_model, mlp_scaler, Xte, yte):
+    def compute_feature_importance_map(models, mlp_model, mlp_scaler, Xte, yte, label):
         importance = {}
         for name, model in models.items():
+            emit_progress(
+                phase="model_feature_importance_start",
+                model=name,
+                label=label
+            )
             importance[name] = compute_feature_importance_for_model(name, model, Xte, yte)
+            emit_progress(
+                phase="model_feature_importance_end",
+                model=name,
+                label=label
+            )
         if mlp_model is not None and mlp_scaler is not None:
+            emit_progress(
+                phase="model_feature_importance_start",
+                model="MLP",
+                label=label
+            )
             importance["MLP"] = mlp_permutation_importance(
                 mlp_model,
                 mlp_scaler,
                 Xte,
                 yte
+            )
+            emit_progress(
+                phase="model_feature_importance_end",
+                model="MLP",
+                label=label
             )
         return importance
 
@@ -1473,6 +1582,14 @@ def main():
         models = {}
         learning_curves = {}
 
+        def log_model_step(model, step, **extra):
+            emit_progress(
+                phase=f"model_{step}",
+                model=model,
+                label=label,
+                **extra
+            )
+
         if DT_ENABLE:
             emit_progress(
                 phase="model_start",
@@ -1484,7 +1601,9 @@ def main():
                 max_depth=DT_MAX_DEPTH,
                 min_samples_leaf=DT_MIN_SAMPLES_LEAF
             )
+            log_model_step("DecisionTree", "fit_start")
             dt.fit(X_tr, y_tr)
+            log_model_step("DecisionTree", "fit_end")
             emit_progress(
                 phase="model_trained",
                 model="DecisionTree",
@@ -1505,7 +1624,9 @@ def main():
                 max_depth=RF_MAX_DEPTH,
                 min_samples_leaf=RF_MIN_SAMPLES_LEAF
             )
+            log_model_step("RandomForest", "fit_start")
             rf.fit(X_tr, y_tr)
+            log_model_step("RandomForest", "fit_end")
             emit_progress(
                 phase="model_trained",
                 model="RandomForest",
@@ -1513,24 +1634,84 @@ def main():
             )            
             models["RandomForest"] = rf
 
+        use_linear_svr = False
+        svr_kernel = "rbf"
+        svr_train_samples = len(X_tr)
+
         if SVR_ENABLE:
             emit_progress(
                 phase="model_start",
                 model="SVR",
                 label=label
             )
-            svr_params = {"C": SVR_C, "epsilon": SVR_EPSILON, "gamma": "scale"}
+            use_linear_svr = len(X_tr) >= SVR_MAX_SAMPLES
+            svr_kernel = "linear" if use_linear_svr else "rbf"
+            if use_linear_svr:
+                log_model_step(
+                    "SVR",
+                    "kernel_switch",
+                    kernel=svr_kernel,
+                    samples=len(X_tr),
+                    maxSamples=SVR_MAX_SAMPLES
+                )
+            svr_params = {
+                "C": SVR_C,
+                "epsilon": SVR_EPSILON
+            }
+            if use_linear_svr:
+                svr_params.update({
+                    "max_iter": SVR_LINEAR_MAX_ITER,
+                    "dual": True
+                })
+            else:
+                svr_params["gamma"] = "scale"
+
+            X_tr_svr = X_tr
+            y_tr_svr = y_tr
+            if len(X_tr) > SVR_MAX_SAMPLES:
+                rng = np.random.RandomState(RANDOM_SEED)
+                idx = rng.choice(len(X_tr), size=SVR_MAX_SAMPLES, replace=False)
+                X_tr_svr = X_tr[idx]
+                y_tr_svr = y_tr[idx]
+                svr_train_samples = len(X_tr_svr)
+                log_model_step(
+                    "SVR",
+                    "subsample",
+                    samples=len(X_tr),
+                    used=len(X_tr_svr)
+                )
             if SVR_TUNE:
+                log_model_step(
+                    "SVR",
+                    "tune_start",
+                    candidates=len(SVR_C_GRID) * len(SVR_EPSILON_GRID) * len(SVR_GAMMA_GRID),
+                    totalCandidates=len(SVR_C_GRID) * len(SVR_EPSILON_GRID) * len(SVR_GAMMA_GRID)
+                )
+                gamma_grid = SVR_GAMMA_GRID if not use_linear_svr else [None]
+                total_candidates = len(SVR_C_GRID) * len(SVR_EPSILON_GRID) * len(gamma_grid)
+                evaluated = 0
+                last_emit = 0
                 candidates = []
                 for c_val in SVR_C_GRID:
                     for eps_val in SVR_EPSILON_GRID:
-                        for gamma_val in SVR_GAMMA_GRID:
+                        for gamma_val in gamma_grid:
                             try:
                                 svr_candidate = make_pipeline(
                                     StandardScaler(),
-                                    SVR(kernel="rbf", C=c_val, epsilon=eps_val, gamma=gamma_val)
+                                    LinearSVR(
+                                        C=c_val,
+                                        epsilon=eps_val,
+                                        max_iter=SVR_LINEAR_MAX_ITER,
+                                        dual=False,
+                                        random_state=RANDOM_SEED
+                                    ) if use_linear_svr else SVR(
+                                        kernel=svr_kernel,
+                                        C=c_val,
+                                        epsilon=eps_val,
+                                        gamma=gamma_val
+                                    )
                                 )
-                                svr_candidate.fit(X_tr, y_tr)
+                                svr_candidate.fit(X_tr_svr, y_tr_svr)
                                 yhat_te = svr_candidate.predict(X_te)
                                 rmse = math.sqrt(mean_squared_error(y_te, yhat_te))
                                 mae = mean_absolute_error(y_te, yhat_te)
@@ -1545,6 +1726,16 @@ def main():
                                 })
                             except Exception:
                                 continue
+                            finally:
+                                evaluated += 1
+                                if evaluated - last_emit >= 25 or evaluated == total_candidates:
+                                    log_model_step(
+                                        "SVR",
+                                        "tune_progress",
+                                        evaluated=evaluated,
+                                        totalCandidates=total_candidates
+                                    )
+                                    last_emit = evaluated
                 if candidates:
                     rmse_rank = {id(c): i for i, c in enumerate(sorted(candidates, key=lambda x: x["rmse"]))}
                     mae_rank = {id(c): i for i, c in enumerate(sorted(candidates, key=lambda x: x["mae"]))}
@@ -1552,17 +1743,71 @@ def main():
                     def rank_sum(candidate):
                         return rmse_rank[id(candidate)] + mae_rank[id(candidate)] + r2_rank[id(candidate)]
                     best = min(candidates, key=lambda c: (rank_sum(c), c["rmse"]))
-                    svr_params = {"C": best["C"], "epsilon": best["epsilon"], "gamma": best["gamma"]}
-                    print(
-                        "[INFO] SVR tuned "
-                        f"C={best['C']} epsilon={best['epsilon']} gamma={best['gamma']} "
-                        f"rmse={best['rmse']:.4f} mae={best['mae']:.4f} r2={best['r2']:.4f}"
+                    svr_params = {"C": best["C"], "epsilon": best["epsilon"]}
+                    if use_linear_svr:
+                        svr_params.update({
+                            "max_iter": SVR_LINEAR_MAX_ITER,
+                            "dual": True
+                        })
+                    else:
+                        svr_params["gamma"] = best["gamma"]
+                    log_model_step(
+                        "SVR",
+                        "tune_end",
+                        candidates=len(candidates),
+                        C=best["C"],
+                        epsilon=best["epsilon"],
+                        gamma=best["gamma"] if not use_linear_svr else None
                     )
+                    if use_linear_svr:
+                        print(
+                            "[INFO] SVR tuned "
+                            f"C={best['C']} epsilon={best['epsilon']} "
+                            f"rmse={best['rmse']:.4f} mae={best['mae']:.4f} r2={best['r2']:.4f}"
+                        )
+                    else:
+                        print(
+                            "[INFO] SVR tuned "
+                            f"C={best['C']} epsilon={best['epsilon']} gamma={best['gamma']} "
+                            f"rmse={best['rmse']:.4f} mae={best['mae']:.4f} r2={best['r2']:.4f}"
+                        )
+                else:
+                    log_model_step("SVR", "tune_end", candidates=0)
             svr = make_pipeline(
                 StandardScaler(),
-                SVR(kernel="rbf", **svr_params)
+                LinearSVR(
+                    **svr_params,
+                    random_state=RANDOM_SEED
+                ) if use_linear_svr else SVR(kernel=svr_kernel, **svr_params)
             )
-            svr.fit(X_tr, y_tr)
+            log_model_step("SVR", "fit_start", samples=len(X_tr))
+            fit_started = time.time()
+            heartbeat_stop = threading.Event()
+
+            def svr_heartbeat():
+                while not heartbeat_stop.wait(300):
+                    try:
+                        usage = resource.getrusage(resource.RUSAGE_SELF)
+                        rss_kb = int(usage.ru_maxrss) if usage.ru_maxrss else None
+                        cpu_seconds = round(usage.ru_utime + usage.ru_stime, 2)
+                    except Exception:
+                        rss_kb = None
+                        cpu_seconds = None
+                    log_model_step(
+                        "SVR",
+                        "fit_heartbeat",
+                        samples=len(X_tr),
+                        elapsedSeconds=round(time.time() - fit_started, 2),
+                        cpuSeconds=cpu_seconds,
+                        rssKb=rss_kb
+                    )
+
+            heartbeat_thread = threading.Thread(target=svr_heartbeat, daemon=True)
+            heartbeat_thread.start()
+            svr.fit(X_tr_svr, y_tr_svr)
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=1)
+            log_model_step("SVR", "fit_end", seconds=round(time.time() - fit_started, 2))
             emit_progress(
                 phase="model_trained",
                 model="SVR",
@@ -1589,6 +1834,7 @@ def main():
             )
             evals_result = {}
             Xtr_lgb, Xval_lgb, ytr_lgb, yval_lgb = _tts(X_tr, y_tr, test_size=0.2, random_state=RANDOM_SEED)
+            log_model_step("LightGBM", "fit_start")
             lgbm.fit(
                 Xtr_lgb, ytr_lgb,
                 eval_set=[(Xtr_lgb, ytr_lgb), (Xval_lgb, yval_lgb)],
@@ -1597,6 +1843,7 @@ def main():
                 callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False),
                            lgb.record_evaluation(evals_result)]
             )
+            log_model_step("LightGBM", "fit_end")
             emit_progress(
                 phase="model_trained",
                 model="LightGBM",
@@ -1620,6 +1867,7 @@ def main():
                 label=label
             )
             Xtr_mlp, Xval_mlp, ytr_mlp, yval_mlp = _tts(X_tr, y_tr, test_size=0.2, random_state=RANDOM_SEED)
+            log_model_step("MLP", "fit_start")
             mlp_model, mlp_scaler, mlp_history, mlp_resumed = train_mlp(
                 Xtr_mlp,
                 ytr_mlp,
@@ -1630,6 +1878,7 @@ def main():
                 patience=MLP_PATIENCE,
                 hid=MLP_HIDDEN
             )
+            log_model_step("MLP", "fit_end")
             emit_progress(
                 phase="model_trained",
                 model="MLP",
@@ -1639,11 +1888,67 @@ def main():
 
         results = []
         for name, model in models.items():
-            results.append(eval_model(model, X_tr, y_tr, X_te, y_te, name))
+            results.append(eval_model(model, X_tr, y_tr, X_te, y_te, name, label))
+            
         if mlp_model is not None and mlp_scaler is not None:
-            results.append(eval_mlp(mlp_model, mlp_scaler, X_tr, y_tr, X_te, y_te))
+            results.append(eval_mlp(mlp_model, mlp_scaler, X_tr, y_tr, X_te, y_te, label))
 
-        feature_importance = compute_feature_importance_map(models, mlp_model, mlp_scaler, X_te, y_te)
+        # Learning curve table (train size vs RMSE/MAE/R2) for sklearn models
+        rng = np.random.RandomState(RANDOM_SEED)
+        perm = rng.permutation(len(X_tr))
+        size_fracs = [0.3, 0.6, 1.0]
+        size_points = sorted(set(max(200, int(len(X_tr) * f)) for f in size_fracs))
+        size_points = [n for n in size_points if n < len(X_tr)] + [len(X_tr)]
+
+        for name, model in models.items():
+            rows = []
+            for n in size_points:
+                try:
+                    idx = perm[:n]
+                    X_sub = X_tr[idx]
+                    y_sub = y_tr[idx]
+                    model_copy = clone(model)
+                    model_copy.fit(X_sub, y_sub)
+                    yhat = model_copy.predict(X_te)
+                    yhat = np.clip(yhat, 0.0, max_gpa)
+                    rows.append({
+                        "samples": n,
+                        "rmse": math.sqrt(mean_squared_error(y_te, yhat)),
+                        "mae": mean_absolute_error(y_te, yhat),
+                        "r2": r2_score(y_te, yhat)
+                    })
+                except Exception as e:
+                    print(f"[WARN] learning curve failed for {name}: {e}")
+                    break
+            if rows:
+                emit_learning_curve_rows(name, size_points, rows, label, svr_kernel, svr_train_samples)
+
+        # Emit a single-row learning curve for MLP using full train size
+        for result in results:
+            if result["name"] == "MLP":
+                emit_learning_curve_rows(
+                    "MLP",
+                    [len(X_tr)],
+                    [{
+                        "samples": len(X_tr),
+                        "rmse": result["rmse_te"],
+                        "mae": result["mae_te"],
+                        "r2": result["r2_te"]
+                    }],
+                    label,
+                    svr_kernel,
+                    svr_train_samples
+                )
+                break
+
+        feature_importance = compute_feature_importance_map(
+            models,
+            mlp_model,
+            mlp_scaler,
+            X_te,
+            y_te,
+            label
+        )
 
         return {
             "models": models,
