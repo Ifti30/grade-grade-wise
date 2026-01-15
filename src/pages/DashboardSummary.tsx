@@ -172,7 +172,7 @@ const MetricBarChart = ({
   dataKey,
   label
 }: {
-  data: { name: string; color?: string; [key: string]: number | string | undefined }[];
+  data: { name: string; color?: string;[key: string]: number | string | undefined }[];
   dataKey: string;
   label: string;
 }) => (
@@ -335,6 +335,8 @@ export default function DashboardSummary() {
   const [summary, setSummary] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [showBestExplanation, setShowBestExplanation] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -356,6 +358,37 @@ export default function DashboardSummary() {
       console.log(summary);
     }
   };
+
+  const handleExport = async () => {
+    try {
+      setIsExporting(true);
+      const res: any = await api.exportResults();
+      const url = res?.downloadUrl;
+      if (!url) {
+        toast.error('Export finished but no download URL returned.');
+        return;
+      }
+
+      // fetch the file with auth headers handled by your api.fetch
+      const blob = await api.fetch(url, { method: 'GET', raw: true }); // if your fetch supports raw
+      // If not, tell me your api.fetch implementation and I’ll adapt it.
+
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'thesis_results.zip';
+      a.click();
+      URL.revokeObjectURL(a.href);
+
+      toast.success('Export downloaded.');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to export results.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+
+
 
   if (loading) {
     return (
@@ -402,9 +435,9 @@ export default function DashboardSummary() {
     enabledModels.length
       ? enabledModels
       : [
-          ...Object.keys(finalMetrics?.models || {}),
-          ...Object.keys(nextMetrics?.models || {})
-        ],
+        ...Object.keys(finalMetrics?.models || {}),
+        ...Object.keys(nextMetrics?.models || {})
+      ],
     bestModel
   );
   const finalMaeData = buildComparisonSeries(finalMetrics?.models, modelNames, 'mae');
@@ -432,14 +465,14 @@ export default function DashboardSummary() {
   ].filter((entry) => entry.value != null);
   const finalModelRanks = finalMetrics?.models
     ? Object.entries(finalMetrics.models)
-        .map(([name, values]) => ({
-          name,
-          rmse: values.rmse,
-          mae: values.mae,
-          r2: values.r2
-        }))
-        .filter((entry) => typeof entry.rmse === 'number')
-        .sort((a, b) => (a.rmse ?? 0) - (b.rmse ?? 0))
+      .map(([name, values]) => ({
+        name,
+        rmse: values.rmse,
+        mae: values.mae,
+        r2: values.r2
+      }))
+      .filter((entry) => typeof entry.rmse === 'number')
+      .sort((a, b) => (a.rmse ?? 0) - (b.rmse ?? 0))
     : [];
   const bestEntry = finalModelRanks[0];
   const runnerUp = finalModelRanks[1];
@@ -972,7 +1005,19 @@ export default function DashboardSummary() {
 
         {/* Metadata */}
         <Card className="p-6 bg-card/50 backdrop-blur-sm border-border/50">
-          <h3 className="text-xl font-semibold text-foreground mb-4">Model Details</h3>
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <h3 className="text-xl font-semibold text-foreground mb-4">Model Details</h3>
+            <Button onClick={handleExport} disabled={isExporting} className="gap-2">
+              {isExporting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Exporting…
+                </>
+              ) : (
+                'Export Results'
+              )}
+            </Button>
+          </div>
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-muted-foreground">Trained at:</span>
@@ -996,18 +1041,17 @@ export default function DashboardSummary() {
                 <p className="mt-2 text-xs text-muted-foreground">
                   Best model is selected by the lowest test RMSE on final CGPA.{' '}
                   {bestEntry
-                    ? `${bestEntry.name} has RMSE ${formatDecimal(bestEntry.rmse, 3)}, MAE ${formatDecimal(bestEntry.mae, 3)}, R² ${formatDecimal(bestEntry.r2, 3)}${
-                        runnerUp
-                          ? `, beating ${runnerUp.name} with RMSE ${formatDecimal(runnerUp.rmse, 3)}.`
-                          : '.'
-                      }`
+                    ? `${bestEntry.name} has RMSE ${formatDecimal(bestEntry.rmse, 3)}, MAE ${formatDecimal(bestEntry.mae, 3)}, R² ${formatDecimal(bestEntry.r2, 3)}${runnerUp
+                      ? `, beating ${runnerUp.name} with RMSE ${formatDecimal(runnerUp.rmse, 3)}.`
+                      : '.'
+                    }`
                     : 'This run does not have enough metrics to compare models.'}
                 </p>
               )}
             </div>
           </div>
         </Card>
-      </div>
-    </Layout>
+      </div >
+    </Layout >
   );
 }

@@ -34,6 +34,7 @@ const terminatedTrainRuns = new Set();
 // Resolve script paths ABSOLUTELY so CWD doesn't matter
 const TRAIN_SCRIPT = path.resolve(__dirname, '../../ml/train.py');
 const PREDICT_SCRIPT = path.resolve(__dirname, '../../ml/predict.py');
+const EXPORT_SCRIPT = path.resolve(__dirname, '../../ml/export_thesis_results.py');
 
 async function loadTrainingMetadata(outDir) {
   try {
@@ -106,7 +107,7 @@ export async function runPythonTrain(orgId, runId, trainJsonPath, configJsonPath
             .sort((a, b) => a.stat.mtimeMs - b.stat.mtimeMs)
             .slice(0, Math.max(0, stats.length - 5))
             .forEach((entry) => {
-              fs.unlink(path.join(process.env.TRAIN_LOG_DIR, entry.name)).catch(() => {});
+              fs.unlink(path.join(process.env.TRAIN_LOG_DIR, entry.name)).catch(() => { });
             });
         }
       } catch (err) {
@@ -498,6 +499,59 @@ export async function runPythonPredict(orgId, studentJsonPath, artifactsDir, out
 
     pythonProcess.on('error', (error) => {
       reject(error);
+    });
+  });
+}
+
+export async function runPythonExport(artifactsDir) {
+  const args = [
+    EXPORT_SCRIPT,
+    '--out-dir', artifactsDir,
+  ];
+
+  console.log('[export] spawn args', args);
+
+  const pythonProcess = spawn(PYTHON_BIN, args, {
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  let stderr = '';
+  const catcher = makeResultCatcher({
+    onError: (err) => {
+      console.error('Python error:', err);
+    },
+  });
+
+  pythonProcess.stdout.on('data', (data) => {
+    catcher.write(data.toString('utf8'));
+  });
+
+  pythonProcess.stderr.on('data', (data) => {
+    stderr += data.toString();
+  });
+
+  return new Promise((resolve, reject) => {
+    pythonProcess.on('close', (code) => {
+      const { result, error } = catcher.getResult();
+
+      if (error) {
+        return reject(new Error(error.message));
+      }
+
+      if (code !== 0 || result?.status === 'error') {
+        const errorMessage = result?.error || `Python script exited with code ${code}.\n${stderr.slice(-4000)}`;
+        return reject(new Error(errorMessage));
+      }
+      if (!result) {
+        return reject(new Error(`Python exited without result (code ${code})\n${stderr.slice(-4000)}`));
+      }
+
+      resolve(result);
+    });
+
+    pythonProcess.on('error', (err) => {
+      reject(err);
     });
   });
 }

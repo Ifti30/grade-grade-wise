@@ -232,6 +232,11 @@ class ApiClient {
   async clearPredictions() {
     return this.fetch('/predict', { method: 'DELETE' });
   }
+
+  // Export
+  async exportResults() {
+    return this.fetch('/export', { method: 'POST' });
+  }
 }
 
 export const api = new ApiClient();

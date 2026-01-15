@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import authRoutes from './routes/auth.js';
 import modelRoutes from './routes/models.js';
 import predictRoutes from './routes/predict.js';
+import exportRoutes from './routes/export.js';
 import { STORAGE_ROOT } from './lib/storage.js';
 import { runCleanup } from './utils/cleanup.js';
 
@@ -29,6 +30,7 @@ app.use('/static', express.static(STORAGE_ROOT));
 app.use('/api/auth', authRoutes);
 app.use('/api/models', modelRoutes);
 app.use('/api/predict', predictRoutes);
+app.use('/api/export', exportRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
